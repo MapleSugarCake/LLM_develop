@@ -1,285 +1,350 @@
+import os
+import time
+import logging
+import requests
+import jieba
+import concurrent.futures
+from typing import List, Dict
+from pathlib import Path
 
-
-# 配置常量
-OLLAMA_API_URL = "http://open-webui-ollama.open-webui:11434/api/generate"
+# ================= 配置区域 =================
+# 使用 Chat Completion API 端点
+OLLAMA_API_URL = "http://open-webui-ollama.open-webui:11434/api/chat"
 MODEL_NAME = "qwen3-coder:30b"
-NUM_CTX = 32768
-MAX_RETRIES = 3
-SENSITIVE_WORDS = ["敏感词1", "敏感词2"]  # 基本敏感词列表，实际可扩展
-REPORTS_DIR = "reports"
-os.makedirs(REPORTS_DIR, exist_ok=True)
+MAX_CTX = 32000
 
-def is_sensitive(text):
-    """基本敏感内容检测"""
-    for word in SENSITIVE_WORDS:
-        if word in text:
-            return True
-    return False
+# Chunking (分段策略) 配置
+# 为模型输出预留约 7000 Token，单次切片最大上限为 25000 Token
+CHUNK_MAX_TOKENS = 25000
+CHUNK_OVERLAP = 2000
 
-def chunk_text(text, max_chunk_size=28000, overlap=2800):
-    """使用jieba分词进行文本切片（滑动窗口）"""
-    if len(text) <= max_chunk_size:
-        return [text]
-    
-    words = list(jieba.cut(text))
-    chunks = []
-    current_chunk = []
-    current_length = 0
-    
-    for word in words:
-        if current_length + len(word) > max_chunk_size and current_chunk:
-            chunk_str = ''.join(current_chunk)
-            chunks.append(chunk_str)
-            overlap_words = []
-            overlap_len = 0
-            for w in reversed(current_chunk):
-                if overlap_len + len(w) > overlap:
-                    break
-                overlap_words.insert(0, w)
-                overlap_len += len(w)
-            current_chunk = overlap_words
-            current_length = overlap_len
-        
-        current_chunk.append(word)
-        current_length += len(word)
-    
-    if current_chunk:
-        chunks.append(''.join(current_chunk))
-    
-    return chunks
+REPORTS_DIR = Path("./reports")
 
-def call_ollama_api(prompt, task_type, retries=MAX_RETRIES):
-    """调用Ollama API，带指数退避重试"""
-    headers = {"Content-Type": "application/json"}
-    data = {
+# 禁用 jieba 的默认日志输出，保持 CLI 清洁
+jieba.setLogLevel(logging.INFO)
+
+# 初始化报告存储目录
+REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ================= API 交互与异常处理 =================
+def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3) -> str:
+    """
+    调用 Ollama Chat Completion API，具备超时控制、网络波动重试与频率限制处理
+    """
+    payload = {
         "model": MODEL_NAME,
-        "prompt": prompt,
-        "format": "json",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "stream": False,
         "options": {
-            "num_ctx": NUM_CTX
-        },
-        "stream": False
+            "num_ctx": MAX_CTX
+        }
     }
-    
+
+    backoff = 2  # 初始退避时间
     for attempt in range(retries):
         try:
-            response = requests.post(OLLAMA_API_URL, json=data, headers=headers, timeout=60)
-            if response.status_code == 200:
-                result = response.json()
-                try:
-                    analysis_result = json.loads(result["response"])
-                    return analysis_result
-                except json.JSONDecodeError:
-                    return {"error": "Invalid JSON response", "raw_response": result["response"]}
-            elif response.status_code in [429, 503, 504]:
-                wait_time = (2 ** attempt) + 1
-                time.sleep(wait_time)
-                continue
-            else:
-                return {"error": f"HTTP {{response.status_code}}", "message": response.text}
-        except (requests.Timeout, requests.ConnectionError) as e:
-            if attempt < retries - 1:
-                wait_time = (2 ** attempt) + 1
-                time.sleep(wait_time)
-                continue
-            else:
-                return {"error": "Max retries exceeded", "exception": str(e)}
-        except Exception as e:
-            return {"error": "Unexpected error", "exception": str(e)}
-    
-    return {"error": "Max retries exceeded"}
+            # 大模型处理长文本耗时较长，Timeout 设置为 300 秒
+            response = requests.post(OLLAMA_API_URL, json=payload, timeout=300)
 
-def analyze_text(text, text_id):
-    """对单个文本执行三种分析任务"""
-    summary_prompt = f"""请对以下文本进行摘要，输出JSON格式：{{"summary": "摘要内容"}}。文本：{text}"""
-    sentiment_prompt = f"""请对以下文本进行情感分析（正面/负面/中性），输出JSON格式：{{"sentiment": "情感标签"}}。文本：{text}"""
-    keywords_prompt = f"""请提取以下文本的关键词（最多5个），输出JSON格式：{{"keywords": ["关键词1", "关键词2", ...]}}。文本：{text}"""
-    
-    tasks = [
-        ("summary", summary_prompt),
-        ("sentiment", sentiment_prompt),
-        ("keywords", keywords_prompt)
-    ]
-    
-    results = {}
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        future_to_task = {
-            executor.submit(call_ollama_api, prompt, task): task 
-            for task, prompt in tasks
+            # 频率限制 (Rate Limiting)
+            if response.status_code == 429:
+                print(f"  [警告] 触发 API 频率限制 (429)，{backoff}秒后重试...")
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+
+            response.raise_for_status()
+            data = response.json()
+
+            # 解析 Chat Completion 的返回格式
+            return data.get('message', {}).get('content', '').strip()
+
+        except requests.exceptions.Timeout:
+            print(f"  [错误] API 请求超时 (Timeout)。尝试 {attempt + 1}/{retries}...")
+        except requests.exceptions.ConnectionError:
+            print(f"  [错误] 网络连接失败，请检查 Ollama 服务。尝试 {attempt + 1}/{retries}...")
+        except requests.exceptions.RequestException as e:
+            print(f"  [错误] API 调用异常: {e}。尝试 {attempt + 1}/{retries}...")
+
+        time.sleep(backoff)
+        backoff *= 2
+
+    return "【API 请求失败，无法生成结果。】"
+
+
+# ================= 上下文超长切片管理 =================
+def chunk_text(text: str) -> List[str]:
+    """
+    分段滚动处理 (Chunking & Sliding Window):
+    利用 jieba 分词估算 Token 数，超过限制则进行带重叠片段的切分。
+    """
+    # 词法切分估算 Token
+    words = list(jieba.cut(text))
+    total_tokens = len(words)
+
+    if total_tokens <= CHUNK_MAX_TOKENS:
+        return [text]
+
+    print(f"  [信息] 文本总 token 估算为 {total_tokens}，超出单次处理限制，启动分段滚动处理策略...")
+    chunks = []
+    start = 0
+    while start < total_tokens:
+        end = min(start + CHUNK_MAX_TOKENS, total_tokens)
+        chunk = " ".join(words[start:end])
+        chunks.append(chunk)
+        if end == total_tokens:
+            break
+        # 滑动窗口：向后退回 overlap 长度，保证段落上下文连贯性
+        start += (CHUNK_MAX_TOKENS - CHUNK_OVERLAP)
+
+    return chunks
+
+
+# ================= 核心分析逻辑 =================
+def extract_features(text: str) -> Dict[str, str]:
+    """多线程对单一片段并发提取三大基础特征"""
+    sys_prompt = "你是一个专业的数据处理与文本智能分析专家。"
+
+    p_summary = f"请对以下文本进行结构化的核心摘要提取，语言需精炼：\n\n{text}"
+    p_sentiment = f"请分析以下文本的情感倾向（正面/负面/中性），并给出简明扼要的分析理由：\n\n{text}"
+    p_keywords = f"请提取以下文本中最重要的 5-10 个关键词，使用逗号分隔输出：\n\n{text}"
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        f_sum = executor.submit(call_ollama_chat, sys_prompt, p_summary)
+        f_sen = executor.submit(call_ollama_chat, sys_prompt, p_sentiment)
+        f_kwd = executor.submit(call_ollama_chat, sys_prompt, p_keywords)
+
+        return {
+            "summary": f_sum.result(),
+            "sentiment": f_sen.result(),
+            "keywords": f_kwd.result()
         }
-        for future in as_completed(future_to_task):
-            task = future_to_task[future]
-            try:
-                result = future.result()
-                results[task] = result
-            except Exception as e:
-                results[task] = {"error": str(e)}
-    
-    return {
-        "text_id": text_id,
-        "original_text": text[:100] + "..." if len(text) > 100 else text,
-        "analysis": results
-    }
 
-def generate_comparison_report(analyses):
-    """生成多文本对比分析的Markdown报告"""
-    analysis_summary = ""
-    for i, analysis in enumerate(analyses):
-        summary = analysis["analysis"].get("summary", {}).get("summary", "N/A")
-        sentiment = analysis["analysis"].get("sentiment", {}).get("sentiment", "N/A")
-        keywords = analysis["analysis"].get("keywords", {}).get("keywords", [])
-        analysis_summary += f"### 文本{i+1}\n- 摘要: {summary}\n- 情感: {sentiment}\n- 关键词: {', '.join(keywords)}\n\n"
-    
-    comparison_prompt = f"""请基于以下多个文本的分析结果，生成一份结构化的Markdown对比报告，突出差异和共同点：
-{analysis_summary}
-报告格式要求：
-# 文本对比分析报告
-## 共同点
-- ...
-## 差异点
-- ...
-## 总结
-- ..."""
-    
-    result = call_ollama_api(comparison_prompt, "comparison")
-    if "error" not in result:
-        report_content = result.get("report", "未能生成对比报告")
-    else:
-        report_content = f"对比报告生成失败: {result.get('error', 'Unknown error')}"
-    
-    return report_content
 
-def create_new_report():
-    """新建报告功能"""
+def process_single_document(text: str, index: int) -> Dict[str, str]:
+    """
+    处理单个文档输入（集成超长文 Map-Reduce 合并逻辑）
+    """
+    print(f"[*] 开始分析文本档 {index}...")
+    chunks = chunk_text(text)
+
+    # 短文本直接处理
+    if len(chunks) == 1:
+        res = extract_features(chunks[0])
+        print(f"[+] 文本档 {index} 分析完成。")
+        return res
+
+    # 长文本 Map-Reduce 处理
+    print(f"  [信息] 文本档 {index} 被切分为 {len(chunks)} 个片段，正在并行处理各片段...")
+    chunk_results = []
+    for i, chunk in enumerate(chunks):
+        chunk_results.append(extract_features(chunk))
+
+    print(f"  [信息] 文本档 {index} 各片段处理完毕，启动全局 Reduce 结果聚合...")
+    sys_prompt = "你是一个专业的文本处理专家，负责融合并汇总局部信息。"
+
+    agg_sum = "综合以下多个文本片段的摘要，生成一个连贯且完整的全局总摘要：\n\n" + "\n---\n".join(
+        [r["summary"] for r in chunk_results])
+    agg_sen = "综合以下对同一文章不同段落的情感分析，给出一个整体的全局情感倾向及总结理由：\n\n" + "\n---\n".join(
+        [r["sentiment"] for r in chunk_results])
+    agg_kwd = "综合以下关键词列表，去重并提取出最具代表性的 10 个核心关键词（仅用逗号分隔）：\n\n" + "\n---\n".join(
+        [r["keywords"] for r in chunk_results])
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        f_sum = executor.submit(call_ollama_chat, sys_prompt, agg_sum)
+        f_sen = executor.submit(call_ollama_chat, sys_prompt, agg_sen)
+        f_kwd = executor.submit(call_ollama_chat, sys_prompt, agg_kwd)
+
+        res = {
+            "summary": f_sum.result(),
+            "sentiment": f_sen.result(),
+            "keywords": f_kwd.result()
+        }
+    print(f"[+] 文本档 {index} 分段汇总分析完成。")
+    return res
+
+
+def generate_comparison(results: List[Dict[str, str]]) -> str:
+    """多文档对比分析"""
+    print("[*] 正在执行多文本交叉对比分析...")
+    sys_prompt = "你是一个顶级数据分析专家。请生成包含'核心差异'、'主题共性'以及'综合总结'三个模块的结构化对比 Markdown 报告。"
+
+    user_prompt = "以下是对多个独立文本的分析结果，请自动汇总这些文本的差异与共性，生成对比报告：\n\n"
+    for i, r in enumerate(results):
+        user_prompt += f"### 文本 {i + 1} 分析\n- **摘要**: {r['summary']}\n- **情感**: {r['sentiment']}\n- **关键词**: {r['keywords']}\n\n"
+
+    return call_ollama_chat(sys_prompt, user_prompt)
+
+
+# ================= 输入过滤与清理 =================
+def sanitize_input(text: str) -> str:
+    """过滤控制字符和非法输入"""
+    if not text:
+        return ""
+    # 简单的非法字符过滤（去除无法打印的控制字符，保留换行）
+    cleaned = "".join(ch for ch in text if ch.isprintable() or ch in ['\n', '\r', '\t'])
+    return cleaned.strip()
+
+
+# ================= 业务流管理 =================
+def create_report():
+    print("\n" + "=" * 40)
+    print("           [ 新建报告 ]")
+    print("=" * 40)
+
     report_name = input("请输入报告名称: ").strip()
     if not report_name:
-        print("报告名称不能为空！")
+        print("[拦截] 报告名称不能为空！")
         return
-    
-    user_input = input("请输入文本内容或文件路径（txt文件，多个文件用逗号分隔）: ").strip()
-    if not user_input:
-        print("输入不能为空！")
-        return
-    
-    texts = []
-    if ',' in user_input or '\n' in user_input:
-        paths = [p.strip() for p in user_input.split(',')]
-        for path in paths:
-            if os.path.isfile(path) and path.endswith('.txt'):
-                with open(path, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                    if content:
-                        texts.append(content)
-                    else:
-                        print(f"警告: 文件 {{path}} 为空，已跳过。")
-            else:
-                texts.append(user_input)
-                break
-    else:
-        if os.path.isfile(user_input) and user_input.endswith('.txt'):
-            with open(user_input, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:
-                    texts.append(content)
-                else:
-                    print("文件内容为空！")
-                    return
-        else:
-            texts.append(user_input)
-    
-    if not texts:
-        print("未获取到有效文本！")
-        return
-    
-    for i, text in enumerate(texts):
-        if is_sensitive(text):
-            print(f"文本{{i+1}}包含敏感内容，已拒绝处理！")
-            return
-    
-    processed_texts = []
-    for text in texts:
-        if len(text) > NUM_CTX * 2:
-            print(f"警告: 文本长度超过上下文限制，将被截断。建议使用更短的文本。")
-        processed_texts.append(text)
-    
-    analyses = []
-    with ThreadPoolExecutor(max_workers=min(5, len(processed_texts))) as executor:
-        future_to_index = {
-            executor.submit(analyze_text, text, i): i 
-            for i, text in enumerate(processed_texts)
-        }
-        for future in as_completed(future_to_index):
-            index = future_to_index[future]
-            try:
-                result = future.result()
-                analyses.append(result)
-            except Exception as e:
-                analyses.append({"text_id": index, "error": str(e)})
-    
-    comparison_report = None
-    if len(processed_texts) >= 2:
-        print("正在生成对比分析报告...")
-        comparison_report = generate_comparison_report(analyses)
-    
-    report_data = {
-        "report_name": report_name,
-        "texts": processed_texts,
-        "analyses": analyses,
-        "comparison_report": comparison_report
-    }
-    
-    report_path = os.path.join(REPORTS_DIR, f"{{report_name}}.json")
-    with open(report_path, 'w', encoding='utf-8') as f:
-        json.dump(report_data, f, ensure_ascii=False, indent=2)
-    
-    print(f"报告已保存至: {{report_path}}")
 
-def view_history_reports():
-    """查看历史报告"""
-    reports = [f for f in os.listdir(REPORTS_DIR) if f.endswith('.json')]
-    if not reports:
-        print("暂无历史报告。")
-        return
-    
-    print("历史报告列表:")
-    for i, report in enumerate(reports, 1):
-        print(f"{{i}}. {{report}}")
-    
-    choice = input("请选择报告编号: ").strip()
-    if not choice.isdigit():
-        print("无效输入！")
-        return
-    
-    index = int(choice) - 1
-    if index < 0 or index >= len(reports):
-        print("编号超出范围！")
-        return
-    
-    report_path = os.path.join(REPORTS_DIR, reports[index])
-    with open(report_path, 'r', encoding='utf-8') as f:
-        report_data = json.load(f)
-    
-    print("\n=== 报告内容 ===")
-    print(json.dumps(report_data, ensure_ascii=False, indent=2))
-
-def main():
-    """主菜单"""
+    inputs = []
+    print("\n请提供要分析的资料内容（可多次输入）。完成所有输入后，请按 '3' 开始分析。")
     while True:
-        print("\n=== 文本智能分析与报告助手 ===")
-        print("1. 新建报告")
-        print("2. 历史报告")
-        print("3. 退出")
-        choice = input("请选择操作: ").strip()
-        
+        print("\n选择输入源:  1. 纯文本  |  2. 文本文件路径  |  3. [结束输入，开始分析]")
+        choice = input("操作 >> ").strip()
+
         if choice == '1':
-            create_new_report()
+            text = input("请输入纯文本内容: ")
+            text = sanitize_input(text)
+            if text:
+                inputs.append(text)
+                print(f"[成功] 已添加文本。当前共 {len(inputs)} 份资料。")
+            else:
+                print("[拦截] 空输入或全为非法字符，已忽略。")
+
         elif choice == '2':
-            view_history_reports()
+            path = input("请输入纯文本文件路径 (如 ./data.txt): ").strip()
+            if os.path.isfile(path):
+                try:
+                    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                        text = sanitize_input(f.read())
+                        if text:
+                            inputs.append(text)
+                            print(f"[成功] 已读取文件并添加。当前共 {len(inputs)} 份资料。")
+                        else:
+                            print("[拦截] 文件内容为空，已忽略。")
+                except Exception as e:
+                    print(f"[错误] 读取文件失败: {e}")
+            else:
+                print("[错误] 路径无效或文件不存在。")
+
         elif choice == '3':
-            print("退出程序。")
+            if not inputs:
+                print("[错误] 没有有效的输入内容，无法生成报告。")
+                return
             break
         else:
-            print("无效选择，请重新输入。")
+            print("[错误] 无效选项。")
+
+    print(f"\n[*] 开始流水线作业，处理 {len(inputs)} 份资料 (并发模式)...")
+
+    # 并行处理所有文本
+    results = [None] * len(inputs)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(5, len(inputs))) as executor:
+        future_to_idx = {
+            executor.submit(process_single_document, text, i + 1): i for i, text in enumerate(inputs)
+        }
+
+        for future in concurrent.futures.as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                results[idx] = future.result()
+            except Exception as e:
+                print(f"[致命异常] 处理文本档 {idx + 1} 时出错: {e}")
+                results[idx] = {"summary": "处理失败", "sentiment": "处理失败", "keywords": "处理失败"}
+
+    # 构建 Markdown
+    md_lines = [
+        f"# 智能分析报告：{report_name}",
+        f"**生成时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        "\n---"
+    ]
+
+    # 基础分析合并
+    for i, res in enumerate(results):
+        md_lines.extend([
+            f"\n## 资料 {i + 1} 分析结果",
+            f"\n### 📑 文本摘要\n{res['summary']}",
+            f"\n### 🎭 情感倾向\n{res['sentiment']}",
+            f"\n### 🔑 核心关键词\n{res['keywords']}",
+            "\n---"
+        ])
+
+    # 如果具有2个及以上的独立输入，触发对比分析进阶功能
+    if len(inputs) >= 2:
+        md_lines.append("\n## ⚖️ 多资料深度对比分析")
+        comparison_res = generate_comparison(results)
+        md_lines.append(comparison_res)
+
+    final_report = "\n".join(md_lines)
+
+    # 保存结果
+    file_path = REPORTS_DIR / f"{report_name}.md"
+    try:
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(final_report)
+        print(f"\n[✔️] 报告生成成功！\n保存位置: {file_path.absolute()}")
+    except Exception as e:
+        print(f"\n[❌] 保存报告失败: {e}")
+
+
+def view_history():
+    print("\n" + "=" * 40)
+    print("           [ 历史报告 ]")
+    print("=" * 40)
+
+    files = list(REPORTS_DIR.glob("*.md"))
+    if not files:
+        print("📁 暂无任何历史报告。")
+        return
+
+    for i, f in enumerate(files):
+        print(f" {i + 1}. {f.stem} (大小: {f.stat().st_size} 字节)")
+
+    choice = input("\n请输入要查看的报告编号 (输入 0 取消): ").strip()
+    if choice.isdigit():
+        idx = int(choice) - 1
+        if 0 <= idx < len(files):
+            try:
+                with open(files[idx], 'r', encoding='utf-8') as f:
+                    print("\n\n" + "▼" * 50)
+                    print(f.read())
+                    print("▲" * 50 + "\n")
+            except Exception as e:
+                print(f"[错误] 读取文件失败: {e}")
+        elif choice != '0':
+            print("[错误] 编号不存在。")
+    else:
+        print("[错误] 输入无效。")
+
+
+# ================= 程序入口 =================
+def main():
+    while True:
+        print("\n" + "#" * 45)
+        print("  文本智能分析与报告助手 (Ollama API 版)")
+        print("#" * 45)
+        print("  1. 新建分析报告")
+        print("  2. 查看历史报告")
+        print("  3. 退出系统")
+        print("-" * 45)
+
+        choice = input("请选择您的操作 (1/2/3): ").strip()
+
+        if choice == '1':
+            create_report()
+        elif choice == '2':
+            view_history()
+        elif choice == '3':
+            print("感谢使用，系统退出。")
+            break
+        else:
+            print("[拦截] 无效输入，请重新选择。")
+
 
 if __name__ == "__main__":
     main()
