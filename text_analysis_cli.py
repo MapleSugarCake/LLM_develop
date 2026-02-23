@@ -24,8 +24,8 @@ CHUNK_OVERLAP = 2000
 jieba.setLogLevel(logging.INFO)
 
 # 初始化报告存储目录
-REPORTS_DIR = Path("./reports")
-REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+BASE_DIR = Path("./reports")
+BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ================= API 交互与异常处理 =================
@@ -310,7 +310,7 @@ def create_report():
                 # 保存单个结果
                 single_report = "\n".join(md_line)
 
-                file_path = REPORTS_DIR / report_dir / f"{idx+1}报告.md"
+                file_path = report_dir / f"{idx+1}报告.md"
                 try:
                     with open(file_path, 'w', encoding='utf-8') as f:
                         f.write(single_report)
@@ -348,7 +348,7 @@ def create_report():
     summary_report = "\n".join(md_lines)
 
     # 保存结果
-    files_path = REPORTS_DIR / report_dir / f"{report_name}汇总报告.md"
+    files_path = report_dir / f"{report_name}汇总报告.md"
     try:
         with open(files_path, 'w', encoding='utf-8') as f:
             f.write(summary_report)
@@ -362,7 +362,7 @@ def view_history():
     print("           [ 历史报告 ]")
     print("=" * 40)
 
-    files = list(REPORTS_DIR.glob("*.md"))
+    files = list(BASE_DIR.rglob("*.md"))
     if not files:
         print("📁 暂无任何历史报告。")
         return
