@@ -1,3 +1,6 @@
 /.idea/
 /.venv/
+/reports/
 testdata.txt
+testdata_mini.txt
+testdata_mini2.txt

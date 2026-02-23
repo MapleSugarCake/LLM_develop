@@ -14,21 +14,22 @@ MODEL_NAME = "qwen3-coder:30b"
 MAX_CTX = 32000
 
 # Chunking (分段策略) 配置
-# 为模型输出预留约 12000 Token，单次切片最大上限为 25000 Token
+# 为模型输出预留约 12000 Token，单次切片最大上限为 20000 Token
 CHUNK_MAX_TOKENS = 20000
 CHUNK_OVERLAP = 2000
 
-REPORTS_DIR = Path("./reports")
+
 
 # 禁用 jieba 的默认日志输出，保持 CLI 清洁
 jieba.setLogLevel(logging.INFO)
 
 # 初始化报告存储目录
+REPORTS_DIR = Path("./reports")
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ================= API 交互与异常处理 =================
-def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3) -> str:
+def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, timeout:int =300) -> str:
     """
     调用 Ollama Chat Completion API，具备超时控制、网络波动重试与频率限制处理
     """
@@ -48,7 +49,7 @@ def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3) -> 
     for attempt in range(retries):
         try:
             # 大模型处理长文本耗时较长，Timeout 设置为 300 秒
-            response = requests.post(OLLAMA_API_URL, json=payload, timeout=300)
+            response = requests.post(OLLAMA_API_URL, json=payload, timeout=timeout)
 
             # 频率限制 (Rate Limiting)
             if response.status_code == 429:
@@ -209,7 +210,6 @@ def process_single_document(text: str, index: int) -> Dict[str, str]:
     print(f"[+] 文本档 {index} 分段汇总分析完成。")
     return res
 
-
 def generate_comparison(results: List[Dict[str, str]]) -> str:
     """多文档对比分析"""
     print("[*] 正在执行多文本交叉对比分析...")
@@ -219,7 +219,7 @@ def generate_comparison(results: List[Dict[str, str]]) -> str:
     for i, r in enumerate(results):
         user_prompt += f"### 文本 {i + 1} 分析\n- **摘要**: {r['summary']}\n- **情感**: {r['sentiment']}\n- **关键词**: {r['keywords']}\n\n"
 
-    return call_ollama_chat(sys_prompt, user_prompt)
+    return call_ollama_chat(sys_prompt, user_prompt,3,600)
 
 
 # ================= 输入过滤与清理 =================
@@ -242,6 +242,8 @@ def create_report():
     if not report_name:
         print("[拦截] 报告名称不能为空！")
         return
+    report_dir = Path(f"./reports/{report_name}")
+    report_dir.mkdir(parents=True, exist_ok=True)
 
     inputs = []
     print("\n请提供要分析的资料内容（可多次输入）。完成所有输入后，请按 '3' 开始分析。")
@@ -259,6 +261,7 @@ def create_report():
                 print("[拦截] 空输入或全为非法字符，已忽略。")
 
         elif choice == '2':
+            print("当前.路径为： "+str(Path.cwd()))
             path = input("请输入纯文本文件路径 (如 ./data.txt): ").strip()
             if os.path.isfile(path):
                 try:
@@ -295,6 +298,26 @@ def create_report():
             idx = future_to_idx[future]
             try:
                 results[idx] = future.result()
+                md_line = [
+                    f"#{report_name}的文档{idx + 1}智能分析报告",
+                    f"**生成时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+                    "\n---"
+                    f"### 📑  文本摘要\n{results[idx]['summary']}",
+                    f"\n### 🎭  情感倾向\n{results[idx]['sentiment']}",
+                    f"\n### 🔑  核心关键词\n{results[idx]['keywords']}",
+                    "\n---"
+                ]
+                # 保存单个结果
+                single_report = "\n".join(md_line)
+
+                file_path = REPORTS_DIR / report_dir / f"{idx+1}报告.md"
+                try:
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(single_report)
+                    print(f"\n[✔️ ] {idx+1}报告生成成功！\n保存位置: {file_path.absolute()}")
+                except Exception as e:
+                    print(f"\n[❌ ] 保存{idx+1}报告失败: {e}")
+
             except Exception as e:
                 print(f"[致命异常] 处理文本档 {idx + 1} 时出错: {e}")
                 results[idx] = {"summary": "处理失败", "sentiment": "处理失败", "keywords": "处理失败"}
@@ -307,31 +330,31 @@ def create_report():
     ]
 
     # 基础分析合并
-    for i, res in enumerate(results):
-        md_lines.extend([
-            f"\n## 资料 {i + 1} 分析结果",
-            f"### 📑  文本摘要\n{res['summary']}",
-            f"\n### 🎭  情感倾向\n{res['sentiment']}",
-            f"\n### 🔑  核心关键词\n{res['keywords']}",
-            "\n---"
-        ])
+    # for i, res in enumerate(results):
+    #     md_lines.extend([
+    #         f"\n## 资料 {i + 1} 分析结果",
+    #         f"### 📑  文本摘要\n{res['summary']}",
+    #         f"\n### 🎭  情感倾向\n{res['sentiment']}",
+    #         f"\n### 🔑  核心关键词\n{res['keywords']}",
+    #         "\n---"
+    #     ])
 
     # 如果具有2个及以上的独立输入，触发对比分析进阶功能
     if len(inputs) >= 2:
-        md_lines.append("\n## ⚖️ 多资料深度对比分析")
+        md_lines.append(f"\n## ⚖️ {report_name}多资料深度对比分析")
         comparison_res = generate_comparison(results)
         md_lines.append(comparison_res)
 
-    final_report = "\n".join(md_lines)
+    summary_report = "\n".join(md_lines)
 
     # 保存结果
-    file_path = REPORTS_DIR / f"{report_name}.md"
+    files_path = REPORTS_DIR / report_dir / f"{report_name}汇总报告.md"
     try:
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(final_report)
-        print(f"\n[✔️ ] 报告生成成功！\n保存位置: {file_path.absolute()}")
+        with open(files_path, 'w', encoding='utf-8') as f:
+            f.write(summary_report)
+        print(f"\n[✔️ ] 汇总报告生成成功！\n保存位置: {files_path.absolute()}")
     except Exception as e:
-        print(f"\n[❌ ] 保存报告失败: {e}")
+        print(f"\n[❌ ] 保存汇总报告失败: {e}")
 
 
 def view_history():
