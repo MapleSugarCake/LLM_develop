@@ -14,8 +14,8 @@ MODEL_NAME = "qwen3-coder:30b"
 MAX_CTX = 32000
 
 # Chunking (分段策略) 配置
-# 为模型输出预留约 7000 Token，单次切片最大上限为 25000 Token
-CHUNK_MAX_TOKENS = 25000
+# 为模型输出预留约 12000 Token，单次切片最大上限为 25000 Token
+CHUNK_MAX_TOKENS = 20000
 CHUNK_OVERLAP = 2000
 
 REPORTS_DIR = Path("./reports")
@@ -94,7 +94,7 @@ def chunk_text(text: str) -> List[str]:
     start = 0
     while start < total_tokens:
         end = min(start + CHUNK_MAX_TOKENS, total_tokens)
-        chunk = " ".join(words[start:end])
+        chunk = "".join(words[start:end])
         chunks.append(chunk)
         if end == total_tokens:
             break
@@ -118,6 +118,26 @@ def extract_features(text: str) -> Dict[str, str]:
         f_sen = executor.submit(call_ollama_chat, sys_prompt, p_sentiment)
         f_kwd = executor.submit(call_ollama_chat, sys_prompt, p_keywords)
 
+        # 调试速度代码
+        task1ing = 0
+        task2ing = 0
+        task3ing = 0
+        while (1):
+            if task1ing == 0 :
+                if f_sum.done():
+                    print("单一片段summary完成")
+                    task1ing = 1
+            if task2ing == 0:
+                if f_sen.done():
+                    print("单一片段sensitive完成")
+                    task2ing = 1
+            if task3ing == 0:
+                if f_kwd.done():
+                    print("单一片段keywords完成")
+                    task3ing = 1
+            if task1ing and task2ing and task3ing:
+                break
+        # 调试速度代码结束
         return {
             "summary": f_sum.result(),
             "sentiment": f_sen.result(),
@@ -137,6 +157,7 @@ def process_single_document(text: str, index: int) -> Dict[str, str]:
         res = extract_features(chunks[0])
         print(f"[+] 文本档 {index} 分析完成。")
         return res
+
 
     # 长文本 Map-Reduce 处理
     print(f"  [信息] 文本档 {index} 被切分为 {len(chunks)} 个片段，正在并行处理各片段...")
@@ -158,6 +179,27 @@ def process_single_document(text: str, index: int) -> Dict[str, str]:
         f_sum = executor.submit(call_ollama_chat, sys_prompt, agg_sum)
         f_sen = executor.submit(call_ollama_chat, sys_prompt, agg_sen)
         f_kwd = executor.submit(call_ollama_chat, sys_prompt, agg_kwd)
+
+        # 调试速度代码
+        task1ing = 0
+        task2ing = 0
+        task3ing = 0
+        while (1):
+            if task1ing == 0:
+                if f_sum.done():
+                    print("长文本 Map-Reduce summary完成")
+                    task1ing = 1
+            if task2ing == 0:
+                if f_sen.done():
+                    print("长文本 Map-Reduce sensitive完成")
+                    task2ing = 1
+            if task3ing == 0:
+                if f_kwd.done():
+                    print("长文本 Map-Reduce keywords完成")
+                    task3ing = 1
+            if task1ing and task2ing and task3ing:
+                break
+        # 调试速度代码结束
 
         res = {
             "summary": f_sum.result(),
@@ -268,9 +310,9 @@ def create_report():
     for i, res in enumerate(results):
         md_lines.extend([
             f"\n## 资料 {i + 1} 分析结果",
-            f"\n### 📑 文本摘要\n{res['summary']}",
-            f"\n### 🎭 情感倾向\n{res['sentiment']}",
-            f"\n### 🔑 核心关键词\n{res['keywords']}",
+            f"### 📑  文本摘要\n{res['summary']}",
+            f"\n### 🎭  情感倾向\n{res['sentiment']}",
+            f"\n### 🔑  核心关键词\n{res['keywords']}",
             "\n---"
         ])
 
@@ -287,9 +329,9 @@ def create_report():
     try:
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(final_report)
-        print(f"\n[✔️] 报告生成成功！\n保存位置: {file_path.absolute()}")
+        print(f"\n[✔️ ] 报告生成成功！\n保存位置: {file_path.absolute()}")
     except Exception as e:
-        print(f"\n[❌] 保存报告失败: {e}")
+        print(f"\n[❌ ] 保存报告失败: {e}")
 
 
 def view_history():
