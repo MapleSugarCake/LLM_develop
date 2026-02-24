@@ -38,6 +38,7 @@ def timetest(func):
     return wrapper
 
 # ================= API 交互与异常处理 =================
+@timetest
 def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, timeout:int =300) -> str:
     """
     调用 Ollama Chat Completion API，具备超时控制、网络波动重试与频率限制处理
@@ -84,6 +85,7 @@ def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, tim
 
 
 # ================= 上下文超长切片管理 =================
+@timetest
 def chunk_text(text: str) -> List[str]:
     """
     分段滚动处理 (Chunking & Sliding Window):
@@ -112,6 +114,7 @@ def chunk_text(text: str) -> List[str]:
 
 
 # ================= 核心分析逻辑 =================
+@timetest
 def extract_features(text: str) -> Dict[str, str]:
     """多线程对单一片段并发提取三大基础特征"""
     sys_prompt = "你是一个专业的数据处理与文本智能分析专家。"
@@ -151,7 +154,7 @@ def extract_features(text: str) -> Dict[str, str]:
             "keywords": f_kwd.result()
         }
 
-
+@timetest
 def process_single_document(text: str, index: int) -> Dict[str, str]:
     """
     处理单个文档输入（集成超长文 Map-Reduce 合并逻辑）
@@ -216,6 +219,7 @@ def process_single_document(text: str, index: int) -> Dict[str, str]:
     print(f"[+] 文本档 {index} 分段汇总分析完成。")
     return res
 
+@timetest
 def generate_comparison(results: List[Dict[str, str]]) -> str:
     """多文档对比分析"""
     print("[*] 正在执行多文本交叉对比分析...")
