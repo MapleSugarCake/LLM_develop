@@ -6,6 +6,7 @@ import jieba
 import concurrent.futures
 from typing import List, Dict
 from pathlib import Path
+import functools
 
 # ================= 配置区域 =================
 # 使用 Chat Completion API 端点
@@ -18,8 +19,6 @@ MAX_CTX = 32000
 CHUNK_MAX_TOKENS = 20000
 CHUNK_OVERLAP = 2000
 
-
-
 # 禁用 jieba 的默认日志输出，保持 CLI 清洁
 jieba.setLogLevel(logging.INFO)
 
@@ -27,6 +26,16 @@ jieba.setLogLevel(logging.INFO)
 BASE_DIR = Path("./reports")
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
+#调试代码
+def timetest(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        start = time.time()
+        result = func(*args, **kwargs)
+        end = time.time()
+        print(f"函数'{func.__name__}'耗时："+str(end-start))
+        return result
+    return wrapper
 
 # ================= API 交互与异常处理 =================
 def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, timeout:int =300) -> str:
@@ -39,10 +48,7 @@ def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, tim
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        "stream": False,
-        "options": {
-            "num_ctx": MAX_CTX
-        }
+        "stream": False
     }
 
     backoff = 2  # 初始退避时间
@@ -110,9 +116,9 @@ def extract_features(text: str) -> Dict[str, str]:
     """多线程对单一片段并发提取三大基础特征"""
     sys_prompt = "你是一个专业的数据处理与文本智能分析专家。"
 
-    p_summary = f"请对以下文本进行结构化的核心摘要提取，语言需精炼：\n\n{text}"
-    p_sentiment = f"请分析以下文本的情感倾向（正面/负面/中性），并给出简明扼要的分析理由：\n\n{text}"
-    p_keywords = f"请提取以下文本中最重要的 5-10 个关键词，使用逗号分隔输出：\n\n{text}"
+    p_summary = f"请对以下文本进行结构化的核心摘要提取，语言需精炼，只输出摘要：\n{text}"
+    p_sentiment = f"请分析以下文本的情感倾向（正面/负面/中性），并给出简明扼要的分析理由，只输出情感倾向及理由：\n{text}"
+    p_keywords = f"请提取以下文本中最重要的 5-10 个关键词，使用逗号分隔输出，只输出关键词：\n{text}"
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         f_sum = executor.submit(call_ollama_chat, sys_prompt, p_summary)
@@ -169,11 +175,11 @@ def process_single_document(text: str, index: int) -> Dict[str, str]:
     print(f"  [信息] 文本档 {index} 各片段处理完毕，启动全局 Reduce 结果聚合...")
     sys_prompt = "你是一个专业的文本处理专家，负责融合并汇总局部信息。"
 
-    agg_sum = "综合以下多个文本片段的摘要，生成一个连贯且完整的全局总摘要：\n\n" + "\n---\n".join(
+    agg_sum = "综合以下多个文本片段的摘要，生成一个连贯且完整的全局总摘要，只输出全局总摘要：\n" + "\n---\n".join(
         [r["summary"] for r in chunk_results])
-    agg_sen = "综合以下对同一文章不同段落的情感分析，给出一个整体的全局情感倾向及总结理由：\n\n" + "\n---\n".join(
+    agg_sen = "综合以下对同一文章不同段落的情感分析，给出一个整体的全局情感倾向及总结理由，只输出全局情感倾向和理由：\n" + "\n---\n".join(
         [r["sentiment"] for r in chunk_results])
-    agg_kwd = "综合以下关键词列表，去重并提取出最具代表性的 10 个核心关键词（仅用逗号分隔）：\n\n" + "\n---\n".join(
+    agg_kwd = "综合以下关键词列表，去重并提取出最具代表性的 10 个核心关键词（仅用逗号分隔），只输出关键词：\n" + "\n---\n".join(
         [r["keywords"] for r in chunk_results])
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
