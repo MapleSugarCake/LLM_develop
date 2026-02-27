@@ -63,7 +63,7 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
     ]
-    print("\n"+str(messages))
+    print(f"\n{messages}")
     backoff = 2  # 初始退避时间
     print("协程开始处理...")
 
@@ -312,39 +312,40 @@ async def create_report():
         idx, res = await future
         results[idx - 1] = res
 
-    # 构建汇总 Markdown
-    md_lines = [
-        f"# 智能分析报告：{report_name}",
-        f"**生成时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
-        "\n---"
-    ]
-
-    # 基础分析合并
-    for i, res in enumerate(results):
-        md_lines.extend([
-            f"\n## 资料 {i + 1} 分析结果",
-            f"\n### 📑  文本摘要\n{res['summary']}",
-            f"\n### 🎭  情感倾向\n{res['sentiment']}",
-            f"\n### 🔑  核心关键词\n{res['keywords']}",
-            "\n---"
-        ])
 
     # 触发对比分析进阶功能
     if len(inputs) >= 2:
+        # 构建汇总 Markdown
+        md_lines = [
+            f"# 智能分析报告：{report_name}",
+            f"**生成时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+            "\n---"
+        ]
+
+        # 基础分析合并
+        for i, res in enumerate(results):
+            md_lines.extend([
+                f"\n## 资料 {i + 1} 分析结果",
+                f"\n### 📑  文本摘要\n{res['summary']}",
+                f"\n### 🎭  情感倾向\n{res['sentiment']}",
+                f"\n### 🔑  核心关键词\n{res['keywords']}",
+                "\n---"
+            ])
+
         md_lines.append(f"\n## ⚖️ {report_name}多资料深度对比分析")
         comparison_res = await generate_comparison(results)
         md_lines.append(comparison_res)
 
-    summary_report = "\n".join(md_lines)
+        summary_report = "\n".join(md_lines)
 
-    # 保存结果
-    files_path = report_dir / f"{report_name}汇总报告.md"
-    try:
-        with open(files_path, 'w', encoding='utf-8') as f:
-            f.write(summary_report)
-        print(f"\n[✔️ ] 汇总报告生成成功！\n保存位置: {files_path.absolute()}")
-    except Exception as e:
-        print(f"\n[❌ ] 保存汇总报告失败: {e}")
+        # 保存结果
+        files_path = report_dir / f"{report_name}汇总分析报告.md"
+        try:
+            with open(files_path, 'w', encoding='utf-8') as f:
+                f.write(summary_report)
+            print(f"\n[✔️ ] 汇总及差异报告生成成功！\n保存位置: {files_path.absolute()}")
+        except Exception as e:
+            print(f"\n[❌ ] 保存汇总报告失败: {e}")
 
 
 def view_history():
