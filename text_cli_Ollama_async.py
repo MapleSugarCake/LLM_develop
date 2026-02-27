@@ -63,7 +63,7 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
     ]
-    print(messages)
+    print("\n"+str(messages))
     backoff = 2  # 初始退避时间
     print("协程开始处理...")
 
