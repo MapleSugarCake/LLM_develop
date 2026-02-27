@@ -56,7 +56,7 @@ def timetest(func):
 
 # ================================== API 交互与异常处理 ==================================
 @timetest
-async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, timeout: int = 600,ctx: int=MAX_CTX) -> str:
+async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, timeout: int = 600) -> str:
     """
     调用 Ollama Chat Completion Ollama库[异步版：超时控制、网络波动重试与频率限制处理]
     """
@@ -66,7 +66,8 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
     ]
     model_options={
         #=================设置大模型的额外参数=================
-        "num_ctx":ctx
+        "num_ctx":MAX_CTX,
+        "repeat_last_n": 64
     }
     print(f"\n{messages}")
     backoff = 2  # 初始退避时间
