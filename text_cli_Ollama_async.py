@@ -63,7 +63,7 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
     ]
-
+    print(messages)
     backoff = 2  # 初始退避时间
     print("协程开始处理...")
 
@@ -79,7 +79,7 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
                 stream=False
             )
 
-            # print(f"\n《《《data》》》:\n{response}")
+            print(f"\n《《《data》》》:\n{response}")
             return response.get('message', {}).get('content', '').strip()
 
         except ResponseError as e:
@@ -381,7 +381,7 @@ def view_history():
 async def main_loop():
     while True:
         print("\n" + "#" * 45)
-        print("  文本智能分析与报告助手 (Ollama Python 异步版)")
+        print("文本智能分析与报告助手 (Ollama Python 异步版)")
         print("#" * 45)
         print("  1. 新建分析报告")
         print("  2. 查看历史报告")

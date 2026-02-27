@@ -406,7 +406,7 @@ def view_history():
 def main():
     while True:
         print("\n" + "#" * 45)
-        print("  文本智能分析与报告助手 (Ollama API 版)")
+        print(" 文本智能分析与报告助手 (Ollama API 版)")
         print("#" * 45)
         print("  1. 新建分析报告")
         print("  2. 查看历史报告")
