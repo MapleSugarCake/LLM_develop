@@ -8,15 +8,17 @@ from pathlib import Path
 import functools
 import httpx
 from ollama import AsyncClient, ResponseError
+from requests import options
 
 # ================= 配置区域 =================
 OLLAMA_API_URL = "http://open-webui-ollama.open-webui:11434"
 MODEL_NAME = "qwen3-coder:30b"
 
 # Chunking (分段策略) 配置
-# 为模型输出预留约 96 Token，单次文本切片理解最大上限为 4096 Token
-CHUNK_MAX_TOKENS = 4000
-CHUNK_OVERLAP = 400
+MAX_CTX = 32000
+# 为模型输出预留约 7000 Token，单次切片最大上限为 25000 Token
+CHUNK_MAX_TOKENS = 25000
+CHUNK_OVERLAP = 2000
 
 # 禁用 jieba 的默认日志输出，保持 CLI 清洁
 jieba.setLogLevel(logging.INFO)
@@ -63,6 +65,10 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
     ]
+    model_options={
+        #设置大模型的额外参数
+        "num_ctx":MAX_CTX
+    }
     print(f"\n{messages}")
     backoff = 2  # 初始退避时间
     print("协程开始处理...")
@@ -76,12 +82,14 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
             response = await client.chat(
                 model=MODEL_NAME,
                 messages=messages,
-                stream=False
+                stream=False,
+                options=model_options
             )
 
             print(f"\n《《《data》》》:\n{response}")
             return response.get('message', {}).get('content', '').strip()
 
+#错误捕获区域
         except ResponseError as e:
             # 专门捕获 Ollama 响应错误
             if e.status_code == 429:
@@ -92,10 +100,8 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
         except httpx.TimeoutException:
             # 超时抛出 httpx.TimeoutException
             print(f"[错误] API 请求超时 (Timeout)。尝试 {attempt + 1}/{retries}...")
-
         except httpx.ConnectError:
             print(f"  [错误] 网络连接失败，请检查 Ollama 服务({OLLAMA_API_URL})。尝试 {attempt + 1}/{retries}...")
-
         except Exception as e:
             print(f"  [错误] 未知调用异常: {e}。尝试 {attempt + 1}/{retries}...")
 

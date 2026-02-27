@@ -15,7 +15,7 @@ MODEL_NAME = "qwen3-coder:30b"
 
 
 # Chunking (分段策略) 配置
-# MAX_CTX = 32000
+MAX_CTX = 32000
 # 为模型输出预留约 12000 Token，单次切片最大上限为 20000 Token
 CHUNK_MAX_TOKENS = 4000
 CHUNK_OVERLAP = 400
