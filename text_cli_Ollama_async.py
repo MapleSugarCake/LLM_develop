@@ -10,7 +10,7 @@ import httpx
 from ollama import AsyncClient, ResponseError
 from requests import options
 
-# ================= 配置区域 =================
+# ================================== 配置区域 ==================================
 OLLAMA_API_URL = "http://open-webui-ollama.open-webui:11434"
 MODEL_NAME = "qwen3-coder:30b"
 
@@ -28,7 +28,7 @@ BASE_DIR = Path("./reports")
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# ================= 调试代码 (兼容同步与异步) =================
+# ================================== 调试代码 (兼容同步与异步) ==================================
 def timetest(func):
     """
     智能装饰器，自动判断函数是同步还是异步，并计算耗时
@@ -55,9 +55,9 @@ def timetest(func):
         return sync_wrapper
 
 
-# ================= API 交互与异常处理 =================
+# ================================== API 交互与异常处理 ==================================
 @timetest
-async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, timeout: int = 300) -> str:
+async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, timeout: int = 600) -> str:
     """
     调用 Ollama Chat Completion Ollama库[异步版：超时控制、网络波动重试与频率限制处理]
     """
@@ -66,14 +66,14 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
         {"role": "user", "content": user_prompt}
     ]
     model_options={
-        #设置大模型的额外参数
+        #=================设置大模型的额外参数=================
         "num_ctx":MAX_CTX
     }
     print(f"\n{messages}")
     backoff = 2  # 初始退避时间
     print("协程开始处理...")
 
-    # 初始化异步客户端并设置超时时间300s
+    # 初始化异步客户端并设置超时时间 600 s
     client = AsyncClient(host=OLLAMA_API_URL, timeout=timeout)
 
     for attempt in range(retries):
@@ -89,7 +89,7 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
             print(f"\n《《《data》》》:\n{response}")
             return response.get('message', {}).get('content', '').strip()
 
-#错误捕获区域
+    #==================================错误捕获区域==================================
         except ResponseError as e:
             # 专门捕获 Ollama 响应错误
             if e.status_code == 429:
@@ -112,7 +112,7 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
     return "【API 请求失败，无法生成结果。】"
 
 
-# ================= 上下文超长切片管理 =================
+# ================================== 上下文超长切片管理 ==================================
 @timetest
 def chunk_text(text: str) -> List[str]:
     """
@@ -124,6 +124,7 @@ def chunk_text(text: str) -> List[str]:
     if total_tokens <= CHUNK_MAX_TOKENS:
         return [text]
 
+    #=================长文本=================
     print(f"  [信息] 文本总 token 估算为 {total_tokens}，超出单次处理限制，启动分段滚动处理策略...")
     chunks = []
     start = 0
@@ -138,7 +139,7 @@ def chunk_text(text: str) -> List[str]:
     return chunks
 
 
-# ================= 核心分析逻辑 =================
+# ================================== 核心分析逻辑 ==================================
 @timetest
 async def extract_features(text: str) -> Dict[str, str]:
     """利用异步机制并发对单一片段提取三大基础特征"""
@@ -148,7 +149,7 @@ async def extract_features(text: str) -> Dict[str, str]:
     p_sentiment = f"请分析以下文本的情感倾向（正面/负面/中性），并给出简明扼要的分析理由，只输出情感倾向及理由，不要输出原文：{text}"
     p_keywords = f"请提取以下文本中最重要的 5-10 个关键词，使用逗号分隔输出，只输出关键词，不要输出原文：{text}"
 
-    # asyncio.gather 可并发执行多个协程，等待全部完成
+    # 并发执行多个协程，等待全部完成
     f_sum, f_sen, f_kwd = await asyncio.gather(
         call_ollama_chat(sys_prompt, p_summary),
         call_ollama_chat(sys_prompt, p_sentiment),
@@ -218,7 +219,7 @@ async def generate_comparison(results: List[Dict[str, str]]) -> str:
     for i, r in enumerate(results):
         user_prompt += f"### 文本 {i + 1} 分析\n- **摘要**: {r['summary']}\n- **情感**: {r['sentiment']}\n- **关键词**: {r['keywords']}\n\n"
 
-    return await call_ollama_chat(sys_prompt, user_prompt, 3, 600)
+    return await call_ollama_chat(sys_prompt, user_prompt, 3, 900)
 
 
 # ================= 输入过滤与清理 =================
@@ -230,7 +231,7 @@ def sanitize_input(text: str) -> str:
     return cleaned.strip()
 
 
-# ================= 业务流管理 =================
+# ================= 业务流管理 ===================
 async def create_report():
     print("\n" + "=" * 40)
     print("           [ 新建报告 ]")
@@ -247,7 +248,7 @@ async def create_report():
     inputs = []
     print("\n请提供要分析的资料内容（可多次输入）。完成所有输入后，请按 '3' 开始分析。")
     while True:
-        print("\n选择输入源:  1. 纯文本  |  2. 文本文件路径  |  3.[结束输入，开始分析]")
+        print("\n选择输入源:  1. 纯文本  |  2. 文本文件路径  |  3. 结束输入，开始分析 ")
         choice = input("操作 >> ").strip()
 
         if choice == '1':
@@ -290,6 +291,7 @@ async def create_report():
     async def task_wrapper(index: int, doc_text: str):
         try:
             res = await process_single_document(doc_text, index)
+            # =================单文件保存=================
             md_line = [
                 f"### {report_name}的文档{index}智能分析报告",
                 f"**生成时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
@@ -310,7 +312,6 @@ async def create_report():
             print(f"[致命异常] 处理文本档 {index} 时出错: {e}")
             return index, {"summary": "处理失败", "sentiment": "处理失败", "keywords": "处理失败"}
 
-    # 使用 asyncio.as_completed 替代原版的 concurrent.futures.as_completed
     results = [None] * len(inputs)
     tasks = [task_wrapper(i + 1, text) for i, text in enumerate(inputs)]
 
@@ -321,14 +322,14 @@ async def create_report():
 
     # 触发对比分析进阶功能
     if len(inputs) >= 2:
-        # 构建汇总 Markdown
+        # =================构建汇总 Markdown=================
         md_lines = [
             f"# 智能分析报告：{report_name}",
             f"**生成时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
             "\n---"
         ]
 
-        # 基础分析合并
+        # =================基础分析合并=================
         for i, res in enumerate(results):
             md_lines.extend([
                 f"\n## 资料 {i + 1} 分析结果",
@@ -344,7 +345,7 @@ async def create_report():
 
         summary_report = "\n".join(md_lines)
 
-        # 保存结果
+        # =================汇总文件保存=================
         files_path = report_dir / f"{report_name}汇总分析报告.md"
         try:
             with open(files_path, 'w', encoding='utf-8') as f:
