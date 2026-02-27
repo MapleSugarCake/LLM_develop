@@ -1,7 +1,6 @@
 import os
 import time
 import logging
-import requests
 import jieba
 import concurrent.futures
 from typing import List, Dict
@@ -42,7 +41,7 @@ def timetest(func):
 
 # ================= API 交互与异常处理 =================
 @timetest
-def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, timeout: int = 600) -> str:
+def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, timeout: int = 300) -> str:
     """
     调用 Ollama Chat Completion Ollama库 [超时控制、网络波动重试与频率限制处理]
     """
@@ -56,7 +55,7 @@ def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, tim
     backoff = 2  # 初始退避时间
     print("线程开始处理")
 
-    # 初始化客户端并设置超时时间
+    # 初始化客户端并设置超时时间300s
     client = Client(host=OLLAMA_API_URL, timeout=timeout)
 
     for attempt in range(retries):
@@ -67,7 +66,7 @@ def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, tim
                 stream=False
             )
 
-            print(f"\ndata:\n{response}")
+            print(f"\n《《《data》》》:\n{response}")
 
             return response.get('message', {}).get('content', '').strip()
 
@@ -323,7 +322,7 @@ def create_report():
                     f"#{report_name}的文档{idx + 1}智能分析报告",
                     f"**生成时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
                     "\n---"
-                    f"### 📑  文本摘要\n{results[idx]['summary']}",
+                    f"\n### 📑  文本摘要\n{results[idx]['summary']}",
                     f"\n### 🎭  情感倾向\n{results[idx]['sentiment']}",
                     f"\n### 🔑  核心关键词\n{results[idx]['keywords']}",
                     "\n---"
@@ -331,7 +330,7 @@ def create_report():
                 # 保存单个结果
                 single_report = "\n".join(md_line)
 
-                file_path = report_dir / f"{idx+1}报告.md"
+                file_path = report_dir / f"资料{idx+1}报告.md"
                 try:
                     with open(file_path, 'w', encoding='utf-8') as f:
                         f.write(single_report)
@@ -354,7 +353,7 @@ def create_report():
     for i, res in enumerate(results):
         md_lines.extend([
             f"\n## 资料 {i + 1} 分析结果",
-            f"### 📑  文本摘要\n{res['summary']}",
+            f"\n### 📑  文本摘要\n{res['summary']}",
             f"\n### 🎭  情感倾向\n{res['sentiment']}",
             f"\n### 🔑  核心关键词\n{res['keywords']}",
             "\n---"
@@ -413,7 +412,7 @@ def view_history():
 def main():
     while True:
         print("\n" + "#" * 45)
-        print("  文本智能分析与报告助手 (Ollama Ollama库版)")
+        print("  文本智能分析与报告助手 (Ollama Python库版)")
         print("#" * 45)
         print("  1. 新建分析报告")
         print("  2. 查看历史报告")

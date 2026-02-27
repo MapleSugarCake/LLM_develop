@@ -55,6 +55,7 @@ def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, tim
     print("\n"+str(payload))
     backoff = 2  # 初始退避时间
     print("线程开始处理")
+
     for attempt in range(retries):
         try:
             # 大模型处理长文本耗时较长，Timeout 设置为 600 秒
@@ -71,7 +72,7 @@ def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, tim
             data = response.json()
 
             # 解析 Chat Completion 的返回格式
-            print(f"\ndata:\n{data}")
+            print(f"\n《《《data》》》:\n{data}")
             return data.get('message', {}).get('content', '').strip()
 
         except requests.exceptions.Timeout:
@@ -315,7 +316,7 @@ def create_report():
                     f"#{report_name}的文档{idx + 1}智能分析报告",
                     f"**生成时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
                     "\n---"
-                    f"### 📑  文本摘要\n{results[idx]['summary']}",
+                    f"\n### 📑  文本摘要\n{results[idx]['summary']}",
                     f"\n### 🎭  情感倾向\n{results[idx]['sentiment']}",
                     f"\n### 🔑  核心关键词\n{results[idx]['keywords']}",
                     "\n---"
@@ -323,7 +324,7 @@ def create_report():
                 # 保存单个结果
                 single_report = "\n".join(md_line)
 
-                file_path = report_dir / f"{idx+1}报告.md"
+                file_path = report_dir / f"资料{idx+1}报告.md"
                 try:
                     with open(file_path, 'w', encoding='utf-8') as f:
                         f.write(single_report)
@@ -346,7 +347,7 @@ def create_report():
     for i, res in enumerate(results):
         md_lines.extend([
             f"\n## 资料 {i + 1} 分析结果",
-            f"### 📑  文本摘要\n{res['summary']}",
+            f"\n### 📑  文本摘要\n{res['summary']}",
             f"\n### 🎭  情感倾向\n{res['sentiment']}",
             f"\n### 🔑  核心关键词\n{res['keywords']}",
             "\n---"
