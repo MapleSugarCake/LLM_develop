@@ -14,9 +14,9 @@ OLLAMA_API_URL = "http://open-webui-ollama.open-webui:11434"
 MODEL_NAME = "qwen3-coder:30b"
 
 # Chunking (分段策略) 配置
-# 为模型输出预留约 12000 Token，单次切片最大上限为 20000 Token
-CHUNK_MAX_TOKENS = 20000
-CHUNK_OVERLAP = 2000
+# 为模型输出预留约 96 Token，单次文本切片理解最大上限为 4096 Token
+CHUNK_MAX_TOKENS = 4000
+CHUNK_OVERLAP = 400
 
 # 禁用 jieba 的默认日志输出，保持 CLI 清洁
 jieba.setLogLevel(logging.INFO)
