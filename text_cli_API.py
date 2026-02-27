@@ -229,11 +229,11 @@ def generate_comparison(results: List[Dict[str, str]]) -> str:
     print("[*] 正在执行多文本交叉对比分析...")
     sys_prompt = "你是一个顶级数据分析专家。请生成包含'核心差异'、'主题共性'以及'综合总结'三个模块的结构化对比 Markdown 报告。"
 
-    user_prompt = "以下是对多个独立文本的分析结果，请自动汇总这些文本的差异与共性，生成对比报告：\n\n"
+    user_prompt = "以下是对多个独立文本的分析结果，请自动汇总这些文本的差异与共性，生成对比报告：\n"
     for i, r in enumerate(results):
         user_prompt += f"### 文本 {i + 1} 分析\n- **摘要**: {r['summary']}\n- **情感**: {r['sentiment']}\n- **关键词**: {r['keywords']}\n\n"
 
-    return call_ollama_chat(sys_prompt, user_prompt,3,6000)
+    return call_ollama_chat(sys_prompt, user_prompt,3,600)
 
 
 # ================= 输入过滤与清理 =================
