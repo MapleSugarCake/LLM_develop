@@ -8,14 +8,13 @@ from pathlib import Path
 import functools
 import httpx
 from ollama import AsyncClient, ResponseError
-from requests import options
 
 # ================================== 配置区域 ==================================
 OLLAMA_API_URL = "http://open-webui-ollama.open-webui:11434"
 MODEL_NAME = "qwen3-coder:30b"
 
 # Chunking (分段策略) 配置
-MAX_CTX = 32000
+MAX_CTX = 32768
 # 为模型输出预留约 7000 Token，单次切片最大上限为 25000 Token
 CHUNK_MAX_TOKENS = 25000
 CHUNK_OVERLAP = 2000
@@ -57,7 +56,7 @@ def timetest(func):
 
 # ================================== API 交互与异常处理 ==================================
 @timetest
-async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, timeout: int = 600) -> str:
+async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, timeout: int = 600,ctx: int=MAX_CTX) -> str:
     """
     调用 Ollama Chat Completion Ollama库[异步版：超时控制、网络波动重试与频率限制处理]
     """
@@ -67,7 +66,7 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
     ]
     model_options={
         #=================设置大模型的额外参数=================
-        "num_ctx":MAX_CTX
+        "num_ctx":ctx
     }
     print(f"\n{messages}")
     backoff = 2  # 初始退避时间
@@ -138,11 +137,24 @@ def chunk_text(text: str) -> List[str]:
 
     return chunks
 
+# =================文本长度级别检测=================
+def chunk_length(text: str)-> int:
+    words = list(jieba.cut(text))
+    total_tokens = len(words)
+    ctx_sizes = [2048, 4096, 8192, 16384, 25000]
+    time_level = [150, 300, 600, 1200, 2400, 3600]
+    for size in ctx_sizes:
+        if total_tokens <= size:
+            # 返回对应的级别（0=2048, 1=4096...）
+            return time_level[ctx_sizes.index(size)]
+    return time_level[5]
+
 
 # ================================== 核心分析逻辑 ==================================
 @timetest
 async def extract_features(text: str) -> Dict[str, str]:
     """利用异步机制并发对单一片段提取三大基础特征"""
+
     sys_prompt = "你是一个专业的数据处理与文本智能分析专家。"
 
     p_summary = f"请对以下文本进行结构化的核心摘要提取，语言需精炼，只输出摘要，不要输出原文：{text}"
@@ -151,9 +163,9 @@ async def extract_features(text: str) -> Dict[str, str]:
 
     # 并发执行多个协程，等待全部完成
     f_sum, f_sen, f_kwd = await asyncio.gather(
-        call_ollama_chat(sys_prompt, p_summary),
-        call_ollama_chat(sys_prompt, p_sentiment),
-        call_ollama_chat(sys_prompt, p_keywords)
+        call_ollama_chat(sys_prompt, p_summary,3, chunk_length(text)),
+        call_ollama_chat(sys_prompt, p_sentiment,3, chunk_length(text)),
+        call_ollama_chat(sys_prompt, p_keywords,3, chunk_length(text))
     )
 
     return {
@@ -194,9 +206,9 @@ async def process_single_document(text: str, index: int) -> Dict[str, str]:
 
     # 并发执行最终的三大融合任务
     f_sum, f_sen, f_kwd = await asyncio.gather(
-        call_ollama_chat(sys_prompt, agg_sum),
-        call_ollama_chat(sys_prompt, agg_sen),
-        call_ollama_chat(sys_prompt, agg_kwd)
+        call_ollama_chat(sys_prompt, agg_sum,3,chunk_length(text)),
+        call_ollama_chat(sys_prompt, agg_sen,3,chunk_length(text)),
+        call_ollama_chat(sys_prompt, agg_kwd,3,chunk_length(text))
     )
 
     res = {
@@ -219,7 +231,7 @@ async def generate_comparison(results: List[Dict[str, str]]) -> str:
     for i, r in enumerate(results):
         user_prompt += f"### 文本 {i + 1} 分析\n- **摘要**: {r['summary']}\n- **情感**: {r['sentiment']}\n- **关键词**: {r['keywords']}\n\n"
 
-    return await call_ollama_chat(sys_prompt, user_prompt, 3, 900)
+    return await call_ollama_chat(sys_prompt, user_prompt, 3, 1000)
 
 
 # ================= 输入过滤与清理 =================
