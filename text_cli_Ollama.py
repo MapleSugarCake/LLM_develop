@@ -126,44 +126,50 @@ def chunk_text(text: str) -> List[str]:
 # ================= 核心分析逻辑 =================
 @timetest
 def extract_features(text: str) -> Dict[str, str]:
-    """多线程对单一片段并发提取三大基础特征"""
+    """多线程对单一片段顺序提取三大基础特征"""
     sys_prompt = "你是一个专业的数据处理与文本智能分析专家。"
 
     p_summary = f"请对以下文本进行结构化的核心摘要提取，语言需精炼，只输出摘要，不要输出原文：{text}"
     p_sentiment = f"请分析以下文本的情感倾向（正面/负面/中性），并给出简明扼要的分析理由，只输出情感倾向及理由，不要输出原文：{text}"
     p_keywords = f"请提取以下文本中最重要的 5-10 个关键词，使用逗号分隔输出，只输出关键词，不要输出原文：{text}"
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        f_sum = executor.submit(call_ollama_chat, sys_prompt, p_summary)
-        f_sen = executor.submit(call_ollama_chat, sys_prompt, p_sentiment)
-        f_kwd = executor.submit(call_ollama_chat, sys_prompt, p_keywords)
-
-        # 调试速度代码
-        task1ing = 0
-        task2ing = 0
-        task3ing = 0
-        while (1):
-            if task1ing == 0 :
-                if f_sum.done():
-                    print("单一片段summary完成")
-                    task1ing = 1
-            if task2ing == 0:
-                if f_sen.done():
-                    print("单一片段sensitive完成")
-                    task2ing = 1
-            if task3ing == 0:
-                if f_kwd.done():
-                    print("单一片段keywords完成")
-                    task3ing = 1
-            if task1ing and task2ing and task3ing:
-                break
-        # 调试速度代码结束
-        return {
-            "summary": f_sum.result(),
-            "sentiment": f_sen.result(),
-            "keywords": f_kwd.result()
+    # with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    #     f_sum = executor.submit(call_ollama_chat, sys_prompt, p_summary)
+    #     f_sen = executor.submit(call_ollama_chat, sys_prompt, p_sentiment)
+    #     f_kwd = executor.submit(call_ollama_chat, sys_prompt, p_keywords)
+    f_sum=call_ollama_chat(sys_prompt, p_summary)
+    f_sen=call_ollama_chat(sys_prompt, p_sentiment)
+    f_kwd=call_ollama_chat(sys_prompt, p_keywords)
+        # # 调试速度代码
+        # task1ing = 0
+        # task2ing = 0
+        # task3ing = 0
+        # while (1):
+        #     if task1ing == 0 :
+        #         if f_sum.done():
+        #             print("单一片段summary完成")
+        #             task1ing = 1
+        #     if task2ing == 0:
+        #         if f_sen.done():
+        #             print("单一片段sensitive完成")
+        #             task2ing = 1
+        #     if task3ing == 0:
+        #         if f_kwd.done():
+        #             print("单一片段keywords完成")
+        #             task3ing = 1
+        #     if task1ing and task2ing and task3ing:
+        #         break
+        # # 调试速度代码结束
+        # return {
+        #     "summary": f_sum.result(),
+        #     "sentiment": f_sen.result(),
+        #     "keywords": f_kwd.result()
+        # }
+    return {
+            "summary": f_sum,
+            "sentiment": f_sen,
+            "keywords": f_kwd
         }
-
 @timetest
 def process_single_document(text: str, index: int) -> Dict[str, str]:
     """
