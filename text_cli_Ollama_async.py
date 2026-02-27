@@ -67,7 +67,9 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
     model_options={
         #=================设置大模型的额外参数=================
         "num_ctx":MAX_CTX,
-        "repeat_last_n": 64
+        "repeat_last_n": 64,
+        'temperature': 0.5
+
     }
     print(f"\n{messages}")
     backoff = 2  # 初始退避时间
