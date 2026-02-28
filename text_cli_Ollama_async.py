@@ -21,7 +21,7 @@ CHUNK_OVERLAP = 200
 
 # 全局 API 最大并发请求限制
 # 根据显存大小和模型并发能力设置，30b 模型建议设置 2~5
-MAX_API_CONCURRENCY = 3
+MAX_API_CONCURRENCY = 2
 _api_semaphore = None    # 信号量对象（必须在事件循环启动后初始化）
 
 # 禁用 jieba 的默认日志输出，保持 CLI 清洁
@@ -172,9 +172,26 @@ async def extract_features(text: str) -> Dict[str, str]:
 
     sys_prompt = "你是一个专业的数据处理与文本智能分析专家。"
 
-    p_summary = f"请对以下引号内文本进行结构化的核心摘要提取，语言需精炼，只输出摘要，不要输出原文：\n\"{text}\""
-    p_sentiment = f"请分析以下引号内文本的情感倾向（正面/负面/中性），并给出简明扼要的分析理由，只输出情感倾向及理由，不要输出原文：\n\"{text}\""
-    p_keywords = f"请提取以下引号内文本中最重要的 5-10 个关键词，使用逗号分隔输出，只输出关键词，不要输出原文：\n\"{text}\""
+    p_summary = f"""请提取以下由 ``` 包裹的文本的核心摘要。
+```
+{text}
+```
+【系统指令】：请严格根据上方文本进行结构化摘要。语言需精炼，直接输出摘要结果，绝不能复述原文！
+摘要结果："""
+
+    p_sentiment = f"""请分析以下由 ``` 包裹的文本的情感倾向。
+```
+{text}
+```
+【系统指令】：请给出情感倾向（正面/负面/中性）及理由。直接输出分析结果，绝不能复述原文！
+情感分析结果及理由："""
+
+    p_keywords = f"""请提取以下由 ``` 包裹的文本的关键词。
+```
+{text}
+```
+【系统指令】：请提取 5-10 个核心关键词，使用逗号分隔。直接输出关键词列表，绝不能包含原文句子！
+关键词："""
 
     # 并发执行多个协程，等待全部完成
     f_sum, f_sen, f_kwd = await asyncio.gather(
@@ -212,12 +229,32 @@ async def process_single_document(text: str, index: int) -> Dict[str, str]:
     print(f"  [信息] 文本档 {index} 各片段处理完毕，启动全局 Reduce 结果聚合...")
     sys_prompt = "你是一个专业的文本处理专家，负责融合并汇总局部信息。"
 
-    agg_sum = "综合以下多个文本片段的摘要，生成一个连贯且完整的全局总摘要，只输出全局总摘要：" + "\n---\n".join(
-        [r["summary"] for r in chunk_results])
-    agg_sen = "综合以下对同一文章不同段落的情感分析，给出一个整体的全局情感倾向及总结理由，只输出全局情感倾向和理由：" + "\n---\n".join(
-        [r["sentiment"] for r in chunk_results])
-    agg_kwd = "综合以下关键词列表，去重并提取出最具代表性的 10 个核心关键词（仅用逗号分隔），只输出关键词：" + "\n---\n".join(
-        [r["keywords"] for r in chunk_results])
+# 先将数据拼接好
+    chunk_summaries = "\n---\n".join([r["summary"] for r in chunk_results])
+    chunk_sentiments = "\n---\n".join([r["sentiment"] for r in chunk_results])
+    chunk_keywords = "\n---\n".join([r["keywords"] for r in chunk_results])
+
+# 1. 全局摘要汇总提示词
+    agg_sum = f"""请综合以下由 ``` 包裹的多个文本片段摘要，生成一个连贯且完整的全局总摘要。
+    ```
+    {chunk_summaries}
+    ```
+    【系统指令】：请务必将上述所有片段摘要融合成一个全局总摘要。语言要连贯，只输出全局总摘要本身，绝不能包含其他无关内容或寒暄。
+    全局总摘要："""
+# 2. 全局情感汇总提示词
+    agg_sen = f"""请综合以下由 ``` 包裹的同一文章不同段落的情感分析，给出一个整体的全局情感倾向及总结理由。
+    ```
+    {chunk_sentiments}
+    ```
+    【系统指令】：请给出一个整体的全局情感倾向（正面/负面/中性）以及总结理由。只输出全局情感倾向和理由，绝不能包含其他多余内容。
+    全局情感倾向及理由："""
+# 3. 全局关键词汇总提示词
+    agg_kwd = f"""请综合以下由 ``` 包裹的多个关键词列表，去重并提取出最具代表性的 10 个核心关键词。
+    ```
+    {chunk_keywords}
+    ```
+    【系统指令】：请对上述列表严格去重，最终只提取 10 个最核心的关键词，必须且只能使用逗号分隔，不要输出任何其他说明性文字。
+    核心关键词："""
 
     # 并发执行最终的三大融合任务
     f_sum, f_sen, f_kwd = await asyncio.gather(
@@ -240,12 +277,25 @@ async def process_single_document(text: str, index: int) -> Dict[str, str]:
 async def generate_comparison(results: List[Dict[str, str]]) -> str:
     """多文档对比分析"""
     print("[*] 正在执行多文本交叉对比分析...")
-    sys_prompt = "你是一个顶级数据分析专家。请生成包含'核心差异'、'主题共性'以及'综合总结'三个模块的结构化对比 Markdown 报告。"
+    sys_prompt = "你是一个顶级数据分析专家。请严格按照要求生成包含'核心差异'、'主题共性'以及'综合总结'三个模块的结构化对比 Markdown 报告。"
 
-    user_prompt = "以下是对多个独立文本的分析结果，请自动汇总这些文本的差异与共性，生成对比报告：\n"
+    # 先拼接整理需要传入的数据
+    texts_data = ""
     for i, r in enumerate(results):
-        user_prompt += f"### 文本 {i + 1} 分析\n- **摘要**: {r['summary']}\n- **情感**: {r['sentiment']}\n- **关键词**: {r['keywords']}\n\n"
+        texts_data += f"### 文本 {i + 1} 分析\n- **摘要**: {r['summary']}\n- **情感**: {r['sentiment']}\n- **关键词**: {r['keywords']}\n\n"
 
+    # 构造提示词
+    user_prompt = f"""以下是由 ``` 包裹的多个独立文本的分析结果：
+    ```
+    {texts_data}
+    ```
+    【系统指令】：请自动汇总上述多个文本的差异与共性，并严格生成结构化的 Markdown 对比报告。
+    报告必须且只能包含以下三个模块：
+    核心差异
+    主题共性
+    综合总结
+    请直接开始输出 Markdown 报告内容：
+    """
     return await call_ollama_chat(sys_prompt, user_prompt, 3, 1000)
 
 
