@@ -416,14 +416,14 @@ async def create_report():
                 "\n---"
             ])
 
-        md_lines.append(f"\n### ⚖️ {report_name}多资料深度对比分析")
+        md_lines.append(f"\n### ⚖️ {report_name}的多资料深度对比分析")
         comparison_res = await generate_comparison(results)
         md_lines.append(comparison_res)
 
         summary_report = "\n".join(md_lines)
 
         # =================汇总文件保存=================
-        files_path = report_dir / f"{report_name}汇总分析报告.md"
+        files_path = report_dir / f"{report_name}的汇总分析报告.md"
         try:
             with open(files_path, 'w', encoding='utf-8') as f:
                 f.write(summary_report)
