@@ -17,7 +17,7 @@ MODEL_NAME = "qwen3-coder:30b"
 MAX_CTX = 32768
 # 单次切片最大上限为 2048 Token
 CHUNK_MAX_TOKENS = 2048
-CHUNK_OVERLAP = 150
+CHUNK_OVERLAP = 100
 
 # 全局 API 最大并发请求限制
 # 根据显存大小和模型并发能力设置，30b 模型建议设置 2~5
@@ -296,7 +296,7 @@ async def generate_comparison(results: List[Dict[str, str]]) -> str:
     综合总结
     请直接开始输出 Markdown 报告内容：
     """
-    return await call_ollama_chat(sys_prompt, user_prompt, 3, 1000)
+    return await call_ollama_chat(sys_prompt, user_prompt, 3, 900)
 
 
 # ================= 输入过滤与清理 =================
