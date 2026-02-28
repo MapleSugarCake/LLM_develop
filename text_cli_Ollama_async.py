@@ -15,9 +15,14 @@ MODEL_NAME = "qwen3-coder:30b"
 
 # Chunking (分段策略) 配置
 MAX_CTX = 32768
-# 为模型输出预留约 7000 Token，单次切片最大上限为 25000 Token
-CHUNK_MAX_TOKENS = 25000
-CHUNK_OVERLAP = 2000
+# 单次切片最大上限为 4096 Token
+CHUNK_MAX_TOKENS = 3072
+CHUNK_OVERLAP = 200
+
+# 全局 API 最大并发请求限制
+# 根据显存大小和模型并发能力设置，30b 模型建议设置 2~5
+MAX_API_CONCURRENCY = 3
+_api_semaphore = None    # 信号量对象（必须在事件循环启动后初始化）
 
 # 禁用 jieba 的默认日志输出，保持 CLI 清洁
 jieba.setLogLevel(logging.INFO)
@@ -56,62 +61,69 @@ def timetest(func):
 
 # ================================== API 交互与异常处理 ==================================
 @timetest
-async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, timeout: int = 600) -> str:
+async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, timeout: int = 300) -> str:
     """
     调用 Ollama Chat Completion Ollama库[异步版：超时控制、网络波动重试与频率限制处理]
     """
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt}
-    ]
-    model_options={
-        #=================设置大模型的额外参数=================
-        "num_ctx":MAX_CTX,
-        "repeat_last_n": 64,
-        'temperature': 0.5
+    # 懒加载初始化信号量（确保在 asyncio 事件循环中创建）
+    global _api_semaphore
+    if _api_semaphore is None:
+        _api_semaphore = asyncio.Semaphore(MAX_API_CONCURRENCY)
 
-    }
-    print(f"\n{messages}")
-    backoff = 2  # 初始退避时间
-    print("协程开始处理...")
+    # 利用信号量限制并发，超过限制的协程会在这里等待（排队）
+    async with _api_semaphore:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        model_options={
+            #=================设置大模型的额外参数=================
+            "num_ctx":MAX_CTX,
+            "repeat_last_n": 64,
+            'temperature': 0.5
+        }
+        print(f"\n{messages}\n")
 
-    # 初始化异步客户端并设置超时时间 600 s
-    client = AsyncClient(host=OLLAMA_API_URL, timeout=timeout)
+        backoff = 2  # 初始退避时间
 
-    for attempt in range(retries):
-        try:
-            # 使用 await 发起非阻塞请求
-            response = await client.chat(
-                model=MODEL_NAME,
-                messages=messages,
-                stream=False,
-                options=model_options
-            )
+        print(f"协程获取到执行权，开始处理... (当前可用并发槽位: {_api_semaphore._value})")
 
-            print(f"\n《《《data》》》:\n{response}")
-            return response.get('message', {}).get('content', '').strip()
+        for attempt in range(retries):
+            try:
+                # 初始化异步客户端并设置超时时间 600 s
+                client = AsyncClient(host=OLLAMA_API_URL, timeout=timeout)
+                # 使用 await 发起非阻塞请求
+                response = await client.chat(
+                    model=MODEL_NAME,
+                    messages=messages,
+                    stream=False,
+                    options=model_options
+                )
 
-    #==================================错误捕获区域==================================
-        except ResponseError as e:
-            # 专门捕获 Ollama 响应错误
-            if e.status_code == 429:
-                print(f"  [警告] 触发 API 频率限制 (429)，{backoff}秒后重试...")
-            else:
-                print(f"  [错误] Ollama API 错误: {e.error} (状态码: {e.status_code})。尝试 {attempt + 1}/{retries}...")
+                print(f"\n《《《data》》》:\n{response}")
+                return response.get('message', {}).get('content', '').strip()
 
-        except httpx.TimeoutException:
-            # 超时抛出 httpx.TimeoutException
-            print(f"[错误] API 请求超时 (Timeout)。尝试 {attempt + 1}/{retries}...")
-        except httpx.ConnectError:
-            print(f"  [错误] 网络连接失败，请检查 Ollama 服务({OLLAMA_API_URL})。尝试 {attempt + 1}/{retries}...")
-        except Exception as e:
-            print(f"  [错误] 未知调用异常: {e}。尝试 {attempt + 1}/{retries}...")
+        #==================================错误捕获区域==================================
+            except ResponseError as e:
+                # 专门捕获 Ollama 响应错误
+                if e.status_code == 429:
+                    print(f"  [警告] 触发 API 频率限制 (429)，{backoff}秒后重试...")
+                else:
+                    print(f"  [错误] Ollama API 错误: {e.error} (状态码: {e.status_code})。尝试 {attempt + 1}/{retries}...")
 
-        # 触发异常后进行异步退避等待（绝对不能用 time.sleep，会阻塞整个事件循环）
-        await asyncio.sleep(backoff)
-        backoff *= 2
+            except httpx.TimeoutException:
+                # 超时抛出 httpx.TimeoutException
+                print(f"[错误] API 请求超时 (Timeout)。尝试 {attempt + 1}/{retries}...")
+            except httpx.ConnectError:
+                print(f"  [错误] 网络连接失败，请检查 Ollama 服务({OLLAMA_API_URL})。尝试 {attempt + 1}/{retries}...")
+            except Exception as e:
+                print(f"  [错误] 未知调用异常: {e}。尝试 {attempt + 1}/{retries}...")
 
-    return "【API 请求失败，无法生成结果。】"
+            # 触发异常后进行异步退避等待（绝对不能用 time.sleep，会阻塞整个事件循环）
+            await asyncio.sleep(backoff)
+            backoff *= 2
+
+        return "【API 请求失败，无法生成结果。】"
 
 
 # ================================== 上下文超长切片管理 ==================================
@@ -141,16 +153,16 @@ def chunk_text(text: str) -> List[str]:
     return chunks
 
 # =================文本长度级别检测=================
-def chunk_length(text: str)-> int:
-    words = list(jieba.cut(text))
-    total_tokens = len(words)
-    ctx_sizes = [2048, 4096, 8192, 16384, 25000]
-    time_level = [150, 300, 600, 1200, 2400, 3600]
-    for size in ctx_sizes:
-        if total_tokens <= size:
-            # 返回对应的级别（0=2048, 1=4096...）
-            return time_level[ctx_sizes.index(size)]
-    return time_level[5]
+# def chunk_length(text: str)-> int:
+#     words = list(jieba.cut(text))
+#     total_tokens = len(words)
+#     ctx_sizes = [2048, 4096, 8192, 16384, 25000]
+#     time_level = [300, 600, 1200, 2400, 3000, 3600]
+#     for size in ctx_sizes:
+#         if total_tokens <= size:
+#             # 返回对应的级别（0=2048, 1=4096...）
+#             return time_level[ctx_sizes.index(size)]
+#     return time_level[5]
 
 
 # ================================== 核心分析逻辑 ==================================
@@ -160,15 +172,15 @@ async def extract_features(text: str) -> Dict[str, str]:
 
     sys_prompt = "你是一个专业的数据处理与文本智能分析专家。"
 
-    p_summary = f"请对以下文本进行结构化的核心摘要提取，语言需精炼，只输出摘要，不要输出原文：{text}"
-    p_sentiment = f"请分析以下文本的情感倾向（正面/负面/中性），并给出简明扼要的分析理由，只输出情感倾向及理由，不要输出原文：{text}"
-    p_keywords = f"请提取以下文本中最重要的 5-10 个关键词，使用逗号分隔输出，只输出关键词，不要输出原文：{text}"
+    p_summary = f"请对以下引号内文本进行结构化的核心摘要提取，语言需精炼，只输出摘要，不要输出原文：\n\"{text}\""
+    p_sentiment = f"请分析以下引号内文本的情感倾向（正面/负面/中性），并给出简明扼要的分析理由，只输出情感倾向及理由，不要输出原文：\n\"{text}\""
+    p_keywords = f"请提取以下引号内文本中最重要的 5-10 个关键词，使用逗号分隔输出，只输出关键词，不要输出原文：\n\"{text}\""
 
     # 并发执行多个协程，等待全部完成
     f_sum, f_sen, f_kwd = await asyncio.gather(
-        call_ollama_chat(sys_prompt, p_summary,3, chunk_length(text)),
-        call_ollama_chat(sys_prompt, p_sentiment,3, chunk_length(text)),
-        call_ollama_chat(sys_prompt, p_keywords,3, chunk_length(text))
+        call_ollama_chat(sys_prompt, p_summary),
+        call_ollama_chat(sys_prompt, p_sentiment),
+        call_ollama_chat(sys_prompt, p_keywords)
     )
 
     return {
@@ -209,9 +221,9 @@ async def process_single_document(text: str, index: int) -> Dict[str, str]:
 
     # 并发执行最终的三大融合任务
     f_sum, f_sen, f_kwd = await asyncio.gather(
-        call_ollama_chat(sys_prompt, agg_sum,3,chunk_length(text)),
-        call_ollama_chat(sys_prompt, agg_sen,3,chunk_length(text)),
-        call_ollama_chat(sys_prompt, agg_kwd,3,chunk_length(text))
+        call_ollama_chat(sys_prompt, agg_sum),
+        call_ollama_chat(sys_prompt, agg_sen),
+        call_ollama_chat(sys_prompt, agg_kwd)
     )
 
     res = {
