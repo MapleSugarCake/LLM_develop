@@ -370,12 +370,12 @@ async def create_report():
             res = await process_single_document(doc_text, index)
             # =================单文件保存=================
             md_line = [
-                f"### {report_name}的文档{index}智能分析报告",
+                f"# {report_name}的文档{index}智能分析报告",
                 f"**生成时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
                 "\n---",
-                f"\n## 📑  文本摘要\n{res['summary']}",
-                f"\n## 🎭  情感倾向\n{res['sentiment']}",
-                f"\n## 🔑  核心关键词\n{res['keywords']}",
+                f"\n### 📑  文本摘要\n{res['summary']}",
+                f"\n### 🎭  情感倾向\n{res['sentiment']}",
+                f"\n### 🔑  核心关键词\n{res['keywords']}",
                 "\n---"
             ]
             single_report = "\n".join(md_line)
@@ -410,13 +410,13 @@ async def create_report():
         for i, res in enumerate(results):
             md_lines.extend([
                 f"\n## 资料 {i + 1} 分析结果",
-                f"\n# 📑  文本摘要\n{res['summary']}",
-                f"\n# 🎭  情感倾向\n{res['sentiment']}",
-                f"\n# 🔑  核心关键词\n{res['keywords']}",
+                f"\n### 📑  文本摘要\n{res['summary']}",
+                f"\n### 🎭  情感倾向\n{res['sentiment']}",
+                f"\n### 🔑  核心关键词\n{res['keywords']}",
                 "\n---"
             ])
 
-        md_lines.append(f"\n### ⚖️ {report_name}的多资料深度对比分析")
+        md_lines.append(f"\n# ⚖️ {report_name}的多资料深度对比分析")
         comparison_res = await generate_comparison(results)
         md_lines.append(comparison_res)
 
