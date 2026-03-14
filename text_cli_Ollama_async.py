@@ -45,7 +45,6 @@ def timetest(func):
             end = time.time()
             print(f"函数 '{func.__name__}' 耗时：{end - start:.4f} 秒")
             return result
-
         return async_wrapper
     else:
         @functools.wraps(func)
@@ -55,7 +54,6 @@ def timetest(func):
             end = time.time()
             print(f"函数 '{func.__name__}' 耗时：{end - start:.4f} 秒")
             return result
-
         return sync_wrapper
 
 
@@ -77,10 +75,13 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
             {"role": "user", "content": user_prompt}
         ]
         model_options={
-            #=================设置大模型的额外参数=================
-            "num_ctx":MAX_CTX,
-            "repeat_last_n": 64,
-            'temperature': 0.5
+        #=================设置大模型的额外参数=================
+            "num_ctx": MAX_CTX,        # 最大token数，它会自适应的
+            "temperature": 0.1,        # 保持严谨，降低创造力
+            "top_p": 0.4,              # 提高输出内容的确定性
+            "num_predict": -1,         # 允许生成较长的完整 JSON 报告
+            "repeat_penalty": 1.15,    # 略微提高重复惩罚，防止关键词重复
+            "seed": 42                 # 固定种子，保证数据处理结果可复现
         }
         print(f"\n{messages}\n")
 
@@ -96,6 +97,7 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
                 response = await client.chat(
                     model=MODEL_NAME,
                     messages=messages,
+                    think=True,
                     stream=False,
                     options=model_options
                 )
@@ -290,10 +292,7 @@ async def generate_comparison(results: List[Dict[str, str]]) -> str:
     {texts_data}
     ```
     【系统指令】：请自动汇总上述多个文本的差异与共性，并严格生成结构化的 Markdown 对比报告。
-    报告必须且只能包含以下三个模块：
-    核心差异
-    主题共性
-    综合总结
+    报告必须且只能包含以下三个模块：核心差异、主题共性、综合总结。
     请直接开始输出 Markdown 报告内容：
     """
     return await call_ollama_chat(sys_prompt, user_prompt, 3, 900)
@@ -308,7 +307,7 @@ def sanitize_input(text: str) -> str:
     return cleaned.strip()
 
 
-# ================= 业务流管理 ===================
+# ================= 核心业务操作流程管理 ===================
 async def create_report():
     print("\n" + "=" * 40)
     print("           [ 新建报告 ]")
@@ -323,6 +322,7 @@ async def create_report():
     report_dir.mkdir(parents=True, exist_ok=True)
 
     inputs = []
+    text_name=[]
     print("\n请提供要分析的资料内容（可多次输入）。完成所有输入后，请按 '3' 开始分析。")
     while True:
         print("\n选择输入源:  1. 纯文本  |  2. 文本文件路径  |  3. 结束输入，开始分析 ")
@@ -333,6 +333,7 @@ async def create_report():
             text = sanitize_input(text)
             if text:
                 inputs.append(text)
+                text_name.append(f"文本{len(inputs)}")
                 print(f"[成功] 已添加文本。当前共 {len(inputs)} 份资料。")
             else:
                 print("[拦截] 空输入或全为非法字符，已忽略。")
@@ -346,6 +347,7 @@ async def create_report():
                         text = sanitize_input(f.read())
                         if text:
                             inputs.append(text)
+                            text_name.append(f.name)
                             print(f"[成功] 已读取文件并添加。当前共 {len(inputs)} 份资料。")
                         else:
                             print("[拦截] 文件内容为空，已忽略。")
@@ -364,13 +366,13 @@ async def create_report():
 
     print(f"\n[*] 开始流水线作业，处理 {len(inputs)} 份资料 (异步并发模式)...")
 
-    # 定义包含持久化的包装任务
+    # 定义包含持久化、生成的包装任务
     async def task_wrapper(index: int, doc_text: str):
         try:
             res = await process_single_document(doc_text, index)
             # =================单文件保存=================
             md_line = [
-                f"# {report_name}的文档{index}智能分析报告",
+                f"# {report_name}的文档{text_name[index-1]}智能分析报告",
                 f"**生成时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
                 "\n---",
                 f"\n### 📑  文本摘要\n{res['summary']}",
@@ -379,16 +381,17 @@ async def create_report():
                 "\n---"
             ]
             single_report = "\n".join(md_line)
-            file_path = report_dir / f"资料{index}报告.md"
+            file_path = report_dir / f"文档{text_name[index-1]}报告.md"
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(single_report)
-            print(f"\n[✔️ ] {index}报告生成成功！\n保存位置: {file_path.absolute()}")
+            print(f"\n[✔️ ] {text_name[index-1]}报告生成成功！\n保存位置: {file_path.absolute()}")
             return index, res
 
         except Exception as e:
             print(f"[致命异常] 处理文本档 {index} 时出错: {e}")
             return index, {"summary": "处理失败", "sentiment": "处理失败", "keywords": "处理失败"}
 
+    #执行任务
     results = [None] * len(inputs)
     tasks = [task_wrapper(i + 1, text) for i, text in enumerate(inputs)]
 
@@ -409,7 +412,7 @@ async def create_report():
         # =================基础分析合并=================
         for i, res in enumerate(results):
             md_lines.extend([
-                f"\n## 资料 {i + 1} 分析结果",
+                f"\n## 资料 {text_name[i]} 分析结果",
                 f"\n### 📑  文本摘要\n{res['summary']}",
                 f"\n### 🎭  情感倾向\n{res['sentiment']}",
                 f"\n### 🔑  核心关键词\n{res['keywords']}",
