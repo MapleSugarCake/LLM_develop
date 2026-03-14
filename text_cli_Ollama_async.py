@@ -12,16 +12,17 @@ from ollama import AsyncClient, ResponseError
 # ================================== 配置区域 ==================================
 OLLAMA_API_URL = "http://open-webui-ollama.open-webui:11434"
 MODEL_NAME = "qwen3-coder:30b"
+#MODEL_NAME = "gpt-oss:20b"
 
 # Chunking (分段策略) 配置
 MAX_CTX = 32768
-# 单次切片最大上限为 2048 Token
-CHUNK_MAX_TOKENS = 2048
-CHUNK_OVERLAP = 100
+# 单次切片最大上限为 8192 Token
+CHUNK_MAX_TOKENS = 8192
+CHUNK_OVERLAP = 300
 
 # 全局 API 最大并发请求限制
 # 根据显存大小和模型并发能力设置，30b 模型建议设置 2~5
-MAX_API_CONCURRENCY = 2
+MAX_API_CONCURRENCY = 3
 _api_semaphore = None    # 信号量对象（必须在事件循环启动后初始化）
 
 # 禁用 jieba 的默认日志输出，保持 CLI 清洁
@@ -33,6 +34,7 @@ BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ================================== 调试代码 (兼容同步与异步) ==================================
+#调试，删
 def timetest(func):
     """
     智能装饰器，自动判断函数是同步还是异步，并计算耗时
@@ -59,7 +61,7 @@ def timetest(func):
 
 # ================================== API 交互与异常处理 ==================================
 @timetest
-async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, timeout: int = 300) -> str:
+async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, timeout: int = 100) -> str:
     """
     调用 Ollama Chat Completion Ollama库[异步版：超时控制、网络波动重试与频率限制处理]
     """
@@ -77,13 +79,13 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
         model_options={
         #=================设置大模型的额外参数=================
             "num_ctx": MAX_CTX,        # 最大token数，它会自适应的
-            "temperature": 0.1,        # 保持严谨，降低创造力
+            "temperature": 0.2,        # 保持严谨，降低创造力
             "top_p": 0.4,              # 提高输出内容的确定性
-            "num_predict": -1,         # 允许生成较长的完整 JSON 报告
+            "num_predict": -1,         # 允许生成较长的完整报告
             "repeat_penalty": 1.15,    # 略微提高重复惩罚，防止关键词重复
+            #调试，删
             "seed": 42                 # 固定种子，保证数据处理结果可复现
         }
-        print(f"\n{messages}\n")
 
         backoff = 2  # 初始退避时间
 
@@ -97,12 +99,9 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
                 response = await client.chat(
                     model=MODEL_NAME,
                     messages=messages,
-                    think=True,
                     stream=False,
                     options=model_options
                 )
-
-                print(f"\n《《《data》》》:\n{response}")
                 return response.get('message', {}).get('content', '').strip()
 
         #==================================错误捕获区域==================================
@@ -287,15 +286,12 @@ async def generate_comparison(results: List[Dict[str, str]]) -> str:
         texts_data += f"### 文本 {i + 1} 分析\n- **摘要**: {r['summary']}\n- **情感**: {r['sentiment']}\n- **关键词**: {r['keywords']}\n\n"
 
     # 构造提示词
-    user_prompt = f"""以下是由 ``` 包裹的多个独立文本的分析结果：
-    ```
-    {texts_data}
-    ```
+    user_prompt = f"""以下是由 ``` 包裹的多个独立文本的分析结果：```{texts_data}```
     【系统指令】：请自动汇总上述多个文本的差异与共性，并严格生成结构化的 Markdown 对比报告。
     报告必须且只能包含以下三个模块：核心差异、主题共性、综合总结。
-    请直接开始输出 Markdown 报告内容：
+    请直接开始输出 Markdown 内容：
     """
-    return await call_ollama_chat(sys_prompt, user_prompt, 3, 900)
+    return await call_ollama_chat(sys_prompt, user_prompt, 3, 300)
 
 
 # ================= 输入过滤与清理 =================
