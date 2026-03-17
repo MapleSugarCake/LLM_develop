@@ -179,7 +179,6 @@ async def extract_features(text: str) -> Dict[str, str]:
     sys_prompt = "你是一名专注于文本语义理解与结构化抽取的计算语言学家，擅长在少样本设定下完成摘要生成、情感极性判断与关键术语识别任务。"
 
     p_summary = f"""任务：请对以下由 ``` 包裹的文本进行信息浓缩，生成高保真度的核心摘要。
-
 ```
 {text}
 ```
@@ -259,6 +258,7 @@ async def process_single_document(text: str, index: int) -> Dict[str, str]:
 保持原文立场与事实准确性，避免引入新信息或主观推断
 输出应为单一连贯段落，长度控制在输入总长度的30%-40%
 直接输出全局摘要："""
+
 # 2. 全局情感汇总提示词
     agg_sen = f"""任务：对以下由 ``` 包裹的同一文章不同段落的情感分析结果进行极性聚合与冲突消解。
     ```
@@ -270,6 +270,7 @@ async def process_single_document(text: str, index: int) -> Dict[str, str]:
 输出格式：【全局情感倾向】+ 理由（不超过40字，聚焦聚合依据而非复述内容）
 倾向类别限定：正面 / 负面 / 中性
 直接输出分析结果："""
+
 # 3. 全局关键词汇总提示词
     agg_kwd = f"""任务：从以下由 ``` 包裹的多个局部关键词列表中收敛出最具语义代表性的核心术语集。
     ```
@@ -331,6 +332,7 @@ async def generate_comparison(results: List[Dict[str, str]]) -> str:
 输出格式：标准 Markdown。
 直接开始输出报告内容：
     """
+
     return await call_ollama_chat(sys_prompt, user_prompt, 3, 300)
 
 
