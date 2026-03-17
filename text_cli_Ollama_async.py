@@ -300,7 +300,7 @@ async def process_single_document(text: str, index: int) -> Dict[str, str]:
 
 
 @timetest
-async def generate_comparison(results: List[Dict[str, str]]) -> str:
+async def generate_comparison(results: List[Dict[str, str]],text_name: List[int]) -> str:
     """多文档对比分析"""
     print("[*] 正在执行多文本交叉对比分析...")
     sys_prompt = (
@@ -312,7 +312,7 @@ async def generate_comparison(results: List[Dict[str, str]]) -> str:
     # 先拼接整理需要传入的数据
     texts_data = ""
     for i, r in enumerate(results):
-        texts_data += f"### 文本 {i + 1} 分析\n- **摘要**: {r['summary']}\n- **情感**: {r['sentiment']}\n- **关键词**: {r['keywords']}\n\n"
+        texts_data += f"### 文本 {text_name[i-1]} 分析\n- **摘要**: {r['summary']}\n- **情感**: {r['sentiment']}\n- **关键词**: {r['keywords']}\n\n"
 
     # 构造提示词
     user_prompt = f"""以下是由 ``` 包裹的多个独立文本的分析结果集合：
@@ -458,7 +458,7 @@ async def create_report():
             ])
 
         md_lines.append(f"\n# ⚖️ {report_name}的多资料深度对比分析")
-        comparison_res = await generate_comparison(results)
+        comparison_res = await generate_comparison(results,text_name)
         md_lines.append(comparison_res)
 
         summary_report = "\n".join(md_lines)
