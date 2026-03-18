@@ -34,33 +34,33 @@ BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ================================== 调试代码 (兼容同步与异步) ==================================
-#调试，删
-def timetest(func):
-    """
-    智能装饰器，自动判断函数是同步还是异步，并计算耗时
-    """
-    if asyncio.iscoroutinefunction(func):
-        @functools.wraps(func)
-        async def async_wrapper(*args, **kwargs):
-            start = time.time()
-            result = await func(*args, **kwargs)
-            end = time.time()
-            print(f"函数 '{func.__name__}' 耗时：{end - start:.4f} 秒")
-            return result
-        return async_wrapper
-    else:
-        @functools.wraps(func)
-        def sync_wrapper(*args, **kwargs):
-            start = time.time()
-            result = func(*args, **kwargs)
-            end = time.time()
-            print(f"函数 '{func.__name__}' 耗时：{end - start:.4f} 秒")
-            return result
-        return sync_wrapper
+#
+# def timetest(func):
+#     """
+#     智能装饰器，自动判断函数是同步还是异步，并计算耗时
+#     """
+#     if asyncio.iscoroutinefunction(func):
+#         @functools.wraps(func)
+#         async def async_wrapper(*args, **kwargs):
+#             start = time.time()
+#             result = await func(*args, **kwargs)
+#             end = time.time()
+#             print(f"函数 '{func.__name__}' 耗时：{end - start:.4f} 秒")
+#             return result
+#         return async_wrapper
+#     else:
+#         @functools.wraps(func)
+#         def sync_wrapper(*args, **kwargs):
+#             start = time.time()
+#             result = func(*args, **kwargs)
+#             end = time.time()
+#             print(f"函数 '{func.__name__}' 耗时：{end - start:.4f} 秒")
+#             return result
+#         return sync_wrapper
 
 
 # ================================== API 交互与异常处理 ==================================
-@timetest
+# @timetest
 async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 3, timeout: int = 100) -> str:
     """
     调用 Ollama Chat Completion Ollama库[异步版：超时控制、网络波动重试与频率限制处理]
@@ -86,7 +86,6 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
             #调试，删
             "seed": 42                 # 固定种子，保证数据处理结果可复现
         }
-        print(f"\n{messages}\n")
 
         backoff = 2  # 初始退避时间
 
@@ -104,7 +103,6 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
                     options=model_options
                 )
 
-                print(f"\n《《《data》》》:\n{response}")
                 return response.get('message', {}).get('content', '').strip()
 
         #==================================错误捕获区域==================================
@@ -131,7 +129,7 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
 
 
 # ================================== 上下文超长切片管理 ==================================
-@timetest
+# @timetest
 def chunk_text(text: str) -> List[str]:
     """
     分段滚动处理 (Chunking & Sliding Window): 同步分词器，CPU密集
@@ -170,7 +168,7 @@ def chunk_text(text: str) -> List[str]:
 
 
 # ================================== 核心分析逻辑 ==================================
-@timetest
+# @timetest
 async def extract_features(text: str) -> Dict[str, str]:
     """利用异步机制并发对单一片段提取三大基础特征"""
 
@@ -222,7 +220,7 @@ async def extract_features(text: str) -> Dict[str, str]:
     }
 
 
-@timetest
+# @timetest
 async def process_single_document(text: str, index: int) -> Dict[str, str]:
     """
     处理单个文档输入（集成超长文 Map-Reduce 合并逻辑）
@@ -299,7 +297,7 @@ async def process_single_document(text: str, index: int) -> Dict[str, str]:
     return res
 
 
-@timetest
+# @timetest
 async def generate_comparison(results: List[Dict[str, str]],text_name: List[int]) -> str:
     """多文档对比分析"""
     print("[*] 正在执行多文本交叉对比分析...")
