@@ -130,7 +130,7 @@ class AsyncPromptBuilder:
         return system_prompt, user_prompt
 
 class AsyncSignatureModule:
-    """异步签名模块：封装 Prompt 构建 + 调用 + 鲁棒解析"""
+    """异步签名模块：封装 Prompt 构建 调用"""
     def __init__(self, signature: Signature, few_shots: List[Example] = None):
         self.signature = signature
         self.few_shots = few_shots or []
@@ -226,8 +226,6 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
             "top_p": 0.4,              # 提高输出内容的确定性
             "num_predict": -1,         # 允许生成较长的完整报告
             "repeat_penalty": 1.15,    # 略微提高重复惩罚，防止关键词重复
-            #调试，删
-            "seed": 42,
             "format": "json"
         }
 
@@ -310,11 +308,11 @@ def chunk_text(text: str) -> List[str]:
 #             return time_level[ctx_sizes.index(size)]
 #     return time_level[5]
 
-# ==================== 任务签名定义（替换原有自由 Prompt）====================
+# ==================== 任务签名定义 ====================
 analysis_sig = Signature(
     inputs={"text": Field("待分析的文本片段")},
     outputs={
-        "summary": Field("精炼的核心摘要，聚焦主旨论点与关键事实，长度控制在原文 15%-25%"),
+        "summary": Field("精炼的核心摘要，聚焦主旨论点与关键事实"),
         "sentiment": Field("情感极性判断", type_="enum[正面,负面,中性]"),
         "keywords": Field("5-10 个核心术语，按语义重要性降序排列", type_="list")
     },
@@ -355,7 +353,7 @@ async def extract_features(text: str) -> Dict[str, str]:
         cot=ENABLE_COT
     )
     
-    # 后处理：确保字段存在（防御式编程）
+    # 后处理：确保字段存在
     return {
         "summary": result.get("summary", ""),
         "sentiment": result.get("sentiment", ""),
@@ -384,7 +382,7 @@ async def process_single_document(text: str, index: int) -> Dict[str, str]:
 
     # 长文本 Map-Reduce 处理：异步并发处理各片段
     print(f"  [信息] 文本档 {index} 被切分为 {len(chunks)} 个片段，正在并行处理各片段...")
-    # 【修复】使用 analysis_module 替代 extract_features（底层已封装）
+
     tasks = [analysis_module(inputs={"text": chunk}, cot=ENABLE_COT) for chunk in chunks]
     chunk_results = await asyncio.gather(*tasks)
 
@@ -395,7 +393,6 @@ async def process_single_document(text: str, index: int) -> Dict[str, str]:
     chunk_sentiments = "\n---\n".join([r.get("sentiment", "") for r in chunk_results])
     chunk_keywords = "\n---\n".join([str(r.get("keywords", [])) for r in chunk_results])
 
-    # 【修复】彻底移除旧式 agg_sum/agg_sen/agg_kwd 字符串构造，改用 Module 调用
     # 注意：此处复用 analysis_module，模型会根据输入内容自动适配（摘要输入->生成全局摘要）
     # 为提升精度，理论上可定义 agg_sig，但为保持架构轻量，暂复用 analysis_sig
     
@@ -536,7 +533,7 @@ async def create_report():
                 "\n---",
                 f"\n### 📑  文本摘要\n{res['summary']}",
                 f"\n### 🎭  情感倾向\n{res['sentiment']}",
-                f"\n### 🔑  核心关键词\n{res['keywords']}",
+                f"\n### 🔑  核心关键词\n{','.join(res['keywords'])}",
                 "\n---"
             ]
             single_report = "\n".join(md_line)
@@ -574,7 +571,7 @@ async def create_report():
                 f"\n## 资料 {text_name[i]} 分析结果",
                 f"\n### 📑  文本摘要\n{res['summary']}",
                 f"\n### 🎭  情感倾向\n{res['sentiment']}",
-                f"\n### 🔑  核心关键词\n{res['keywords']}",
+                f"\n### 🔑  核心关键词\n{','.join(res['keywords'])}",
                 "\n---"
             ])
 
