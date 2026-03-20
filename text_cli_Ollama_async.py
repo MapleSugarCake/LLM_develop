@@ -8,6 +8,9 @@ from pathlib import Path
 import functools
 import httpx
 from ollama import AsyncClient, ResponseError
+import json
+from typing import Any
+import re
 
 # ================================== 配置区域 ==================================
 OLLAMA_API_URL = "http://open-webui-ollama.open-webui:11434"
@@ -32,6 +35,146 @@ jieba.setLogLevel(logging.INFO)
 BASE_DIR = Path("./reports")
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
+# ==================== 新增：提示工程配置 ====================
+ENABLE_COT = True  # 【交互开关】启用 Chain-of-Thought 推理（两步走：先 reasoning，再 answer）
+FEW_SHOT_ENABLED = True  # 启用 Few-Shot 示例注入
+
+# Few-Shot 示例池（按任务类型组织，便于扩展）
+FEW_SHOT_EXAMPLES = {
+    "analysis": [
+        {
+            "inputs": {"text": "Qwen3 在编码任务上表现卓越，但 30B 参数对显存提出挑战。"},
+            "outputs": {
+                "summary": "Qwen3 编码能力强但显存需求高。",
+                "sentiment": "中性：肯定技术进步，指出资源约束。",
+                "keywords": "Qwen3,编码能力,显存,参数规模,推理效率"
+            }
+        }
+    ],
+    "comparison": [
+        {
+            "inputs": {
+                "doc1_summary": "文档1聚焦人类探索精神，从恐惧走向科学。",
+                "doc2_summary": "文档2批判旧社会问题，通过阿Q形象反思人性。"
+            },
+            "outputs": {
+                "differences": ["文档1基调积极，文档2基调批判", "文档1面向未来，文档2反思过去"],
+                "commonalities": ["都涉及人类精神状态", "都使用文学手法表达思想"],
+                "conclusion": "两篇文档从不同角度探讨人类处境：文档1歌颂探索，文档2批判社会。"
+            }
+        }
+    ]
+}
+
+# ================================== 声明式签名系统 ==================================
+class Field:
+    def __init__(self, desc: str, type_: str = "string"):
+        self.desc = desc
+        self.type_ = type_  # "string" | "list" | "enum[正面,负面,中性]"
+
+class Signature:
+    def __init__(self, inputs: Dict[str, Field], outputs: Dict[str, Field], instruction: str):
+        self.inputs = inputs
+        self.outputs = outputs
+        self.instruction = instruction
+
+class Example:
+    def __init__(self, inputs: Dict[str, str], outputs: Dict[str, Any]):
+        self.inputs = inputs
+        self.outputs = outputs
+
+class AsyncPromptBuilder:
+    """异步兼容的 Prompt 构建器：生成 (system_prompt, user_prompt) 二元组"""
+    
+    @staticmethod
+    def _format_output_schema(outputs: Dict[str, Field], cot: bool) -> Dict:
+        schema = {}
+        if cot:
+            schema["reasoning"] = "[string] 逐步推理过程，用中文简述关键逻辑链"
+        for k, v in outputs.items():
+            type_desc = {
+                "string": "str",
+                "list": "List[str]",
+                "enum[正面,负面,中性]": "Literal['正面','负面','中性']"
+            }.get(v.type_, "str")
+            schema[k] = f"[{type_desc}] {v.desc}"
+        return schema
+
+    @staticmethod
+    def build(signature: Signature, inputs: Dict[str, str], 
+              few_shots: List[Example] = None, cot: bool = False) -> tuple[str, str]:
+        # === System Prompt: 角色 + 约束 + JSON Schema ===
+        output_schema = AsyncPromptBuilder._format_output_schema(signature.outputs, cot)
+        
+        system_prompt = (
+            f"你是一名{signature.instruction}的专业引擎。\n"
+            "【核心约束】\n"
+            "1. 输出必须是严格合法的 JSON 对象，禁止任何额外文本、Markdown 标记或解释；\n"
+            "2. 字段集合必须与签名完全一致，禁止增删、重命名或嵌套无关字段；\n"
+            "3. 若启用 CoT，reasoning 字段必须先生成，answer 字段必须严格符合下方 Schema；\n"
+            "4. 中文字符保留 UTF-8 编码，避免 Unicode 转义；\n"
+            "5. 列表字段使用标准 JSON 数组格式，如 [\"kw1\", \"kw2\"]。\n"
+            f"【输出 JSON Schema】\n{json.dumps(output_schema, ensure_ascii=False, indent=2)}"
+        )
+        
+        # === Few-Shot Examples ===
+        user_prompt = ""
+        if few_shots and FEW_SHOT_ENABLED:
+            user_prompt += "【示例】\n"
+            for i, ex in enumerate(few_shots, 1):
+                user_prompt += f"示例{i}输入:\n{json.dumps(ex.inputs, ensure_ascii=False)}\n"
+                user_prompt += f"示例{i}输出:\n{json.dumps(ex.outputs, ensure_ascii=False)}\n\n"
+        
+        # === 当前任务 ===
+        user_prompt += f"【当前任务】\n输入:\n{json.dumps(inputs, ensure_ascii=False)}\n输出:"
+        return system_prompt, user_prompt
+
+class AsyncSignatureModule:
+    """异步签名模块：封装 Prompt 构建 + 调用 + 鲁棒解析"""
+    def __init__(self, signature: Signature, few_shots: List[Example] = None):
+        self.signature = signature
+        self.few_shots = few_shots or []
+    
+    async def __call__(self, inputs: Dict[str, str], cot: bool = False) -> Dict[str, Any]:
+        system_prompt, user_prompt = AsyncPromptBuilder.build(
+            self.signature, inputs, self.few_shots, cot
+        )
+        
+        # 复用原有 call_ollama_chat（带重试/信号量/超时）
+        raw = await call_ollama_chat(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            retries=3, timeout=120
+        )
+        
+        # === 两步解析：CoT 模式 vs 直出模式 ===
+        try:
+            result = json.loads(raw)
+            if cot and "reasoning" in result and "answer" in result:
+                # CoT 模式：提取 answer 部分
+                answer = result["answer"]
+                # 可选：记录 reasoning 用于调试（不污染业务输出）
+                if logging.getLogger().isEnabledFor(logging.DEBUG):
+                    logging.debug(f"CoT 推理: {result['reasoning'][:300]}...")
+                return answer
+            elif cot and "reasoning" in result:
+                # 降级：若 model 未严格遵循 schema，尝试从 reasoning 后提取 JSON
+                match = re.search(r'\{.*\}', raw[raw.rfind("}")+1:], re.DOTALL)
+                if match:
+                    return json.loads(match.group(0))
+            return result
+        except json.JSONDecodeError:
+            # 【修复】在全文中搜索首个完整 JSON 块，而非切片后搜索
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if match:
+                try:
+                    candidate = json.loads(match.group(0))
+                    if cot and "answer" in candidate:
+                        return candidate["answer"]
+                    return candidate
+                except:
+                    pass
+            return {"error": "JSON_PARSE_FAILED", "raw_preview": raw[:200]}
 
 # ================================== 调试代码 (兼容同步与异步) ==================================
 #
@@ -84,7 +227,8 @@ async def call_ollama_chat(system_prompt: str, user_prompt: str, retries: int = 
             "num_predict": -1,         # 允许生成较长的完整报告
             "repeat_penalty": 1.15,    # 略微提高重复惩罚，防止关键词重复
             #调试，删
-            "seed": 42                 # 固定种子，保证数据处理结果可复现
+            "seed": 42,
+            "format": "json"
         }
 
         backoff = 2  # 初始退避时间
@@ -166,57 +310,56 @@ def chunk_text(text: str) -> List[str]:
 #             return time_level[ctx_sizes.index(size)]
 #     return time_level[5]
 
+# ==================== 任务签名定义（替换原有自由 Prompt）====================
+analysis_sig = Signature(
+    inputs={"text": Field("待分析的文本片段")},
+    outputs={
+        "summary": Field("精炼的核心摘要，聚焦主旨论点与关键事实，长度控制在原文 15%-25%"),
+        "sentiment": Field("情感极性判断", type_="enum[正面,负面,中性]"),
+        "keywords": Field("5-10 个核心术语，按语义重要性降序排列", type_="list")
+    },
+    instruction="文本语义理解与结构化抽取，擅长在少样本设定下完成摘要生成、情感极性判断与关键术语识别"
+)
+
+comparison_sig = Signature(
+    inputs={
+        "doc1_summary": Field("文档 1 的摘要"),
+        "doc2_summary": Field("文档 2 的摘要")
+    },
+    outputs={
+        "differences": Field("文档差异列表", type_="list"),
+        "commonalities": Field("共享主题列表", type_="list"),
+        "conclusion": Field("整体对比结论，基于差异与共性的加权分析")
+    },
+    instruction="跨文档语义合成，擅长从多源异构文本中识别模式、冲突与共识"
+)
+
+# 初始化模块（注入 Few-Shot）
+analysis_module = AsyncSignatureModule(
+    analysis_sig, 
+    few_shots=[Example(**ex) for ex in FEW_SHOT_EXAMPLES.get("analysis", [])]
+)
+comparison_module = AsyncSignatureModule(
+    comparison_sig,
+    few_shots=[Example(**ex) for ex in FEW_SHOT_EXAMPLES.get("comparison", [])]
+)
 
 # ================================== 核心分析逻辑 ==================================
-# @timetest
+# @timetest  # 可选：保留调试装饰器
 async def extract_features(text: str) -> Dict[str, str]:
-    """利用异步机制并发对单一片段提取三大基础特征"""
-
-    #==============================三大特征提示词
-
-    sys_prompt = "你是一名专注于文本语义理解与结构化抽取的计算语言学家，擅长在少样本设定下完成摘要生成、情感极性判断与关键术语识别任务。"
-
-    p_summary = f"""任务：请对以下由 ``` 包裹的文本进行信息浓缩，生成高保真度的核心摘要。
-```
-{text}
-```
-执行要求：
-- 聚焦文本的主旨论点、关键事实与结论性陈述
-- 保持原意完整性，避免主观推断或信息增补
-- 输出应为连贯的陈述句，长度控制在原文15%-25%
-直接输出摘要内容：："""
-
-    p_sentiment = f"""任务：判断以下由 ``` 包裹的文本的情感极性并提供可解释依据。
-```
-{text}
-```
-执行要求：
-- 从词汇情感、句法语气与语用意图三层面综合判断
-- 输出格式：【情感倾向】+ 简短理由（不超过30字）
-- 倾向类别限定：正面 / 负面 / 中性
-直接输出分析结果："""
-
-    p_keywords = f"""任务：从以下由 ``` 包裹的文本中抽取最具语义代表性的关键术语。
-```
-{text}
-```
-执行要求：
-- 优先选择承载核心概念、领域术语或高频实体的词语
-- 数量：5-10个，按语义重要性降序排列
-- 使用英文逗号分隔，不包含序号或解释
-直接输出关键词列表："""
-
-    # 并发执行多个协程，等待全部完成
-    f_sum, f_sen, f_kwd = await asyncio.gather(
-        call_ollama_chat(sys_prompt, p_summary),
-        call_ollama_chat(sys_prompt, p_sentiment),
-        call_ollama_chat(sys_prompt, p_keywords)
+    """利用异步机制 + 声明式签名 + 可选 CoT 提取三大基础特征"""
+    
+    # 调用签名模块（CoT 开关由全局配置控制）
+    result = await analysis_module(
+        inputs={"text": text},
+        cot=ENABLE_COT
     )
-
+    
+    # 后处理：确保字段存在（防御式编程）
     return {
-        "summary": f_sum,
-        "sentiment": f_sen,
-        "keywords": f_kwd
+        "summary": result.get("summary", ""),
+        "sentiment": result.get("sentiment", ""),
+        "keywords": result.get("keywords", [])
     }
 
 
@@ -230,63 +373,46 @@ async def process_single_document(text: str, index: int) -> Dict[str, str]:
 
     # 短文本直接处理
     if len(chunks) == 1:
-        res = await extract_features(chunks[0])
+        res = await analysis_module(inputs={"text": chunks[0]}, cot=ENABLE_COT)
         print(f"[+] 文本档 {index} 分析完成。")
-        return res
+        # 防御性：确保字段存在
+        return {
+            "summary": res.get("summary", ""),
+            "sentiment": res.get("sentiment", ""),
+            "keywords": res.get("keywords", [])
+        }
 
-    # 长文本 Map-Reduce 处理: 异步并发处理各片段
+    # 长文本 Map-Reduce 处理：异步并发处理各片段
     print(f"  [信息] 文本档 {index} 被切分为 {len(chunks)} 个片段，正在并行处理各片段...")
-    tasks = [extract_features(chunk) for chunk in chunks]
+    # 【修复】使用 analysis_module 替代 extract_features（底层已封装）
+    tasks = [analysis_module(inputs={"text": chunk}, cot=ENABLE_COT) for chunk in chunks]
     chunk_results = await asyncio.gather(*tasks)
 
     print(f"  [信息] 文本档 {index} 各片段处理完毕，启动全局 Reduce 结果聚合...")
-    sys_prompt = "你是一个专业的文本处理专家，负责融合并汇总局部信息。"
+    
+    # 数据拼接
+    chunk_summaries = "\n---\n".join([r.get("summary", "") for r in chunk_results])
+    chunk_sentiments = "\n---\n".join([r.get("sentiment", "") for r in chunk_results])
+    chunk_keywords = "\n---\n".join([str(r.get("keywords", [])) for r in chunk_results])
 
-# 先将数据拼接好
-    chunk_summaries = "\n---\n".join([r["summary"] for r in chunk_results])
-    chunk_sentiments = "\n---\n".join([r["sentiment"] for r in chunk_results])
-    chunk_keywords = "\n---\n".join([r["keywords"] for r in chunk_results])
+    # 【修复】彻底移除旧式 agg_sum/agg_sen/agg_kwd 字符串构造，改用 Module 调用
+    # 注意：此处复用 analysis_module，模型会根据输入内容自动适配（摘要输入->生成全局摘要）
+    # 为提升精度，理论上可定义 agg_sig，但为保持架构轻量，暂复用 analysis_sig
+    
+    async def aggregate_task(input_text: str) -> Dict:
+        return await analysis_module(inputs={"text": input_text}, cot=ENABLE_COT)
 
-# 1. 全局摘要汇总提示词
-    agg_sum = f"""任务：对以下由 ``` 包裹的多个局部摘要进行语义融合，生成逻辑自洽的全局摘要。
-    ```
-    {chunk_summaries}
-    ```
-    执行三重融合操作：①信息去冗（识别并合并重复陈述）②逻辑重构（按"主旨-论据-结论"层级重组）③语义补全（填补片段间的推理间隙）
-保持原文立场与事实准确性，避免引入新信息或主观推断
-输出应为单一连贯段落，长度控制在输入总长度的30%-40%
-直接输出全局摘要："""
-
-# 2. 全局情感汇总提示词
-    agg_sen = f"""请综合以下由 ``` 包裹的同一文章不同段落的情感分析，给出一个整体的全局情感倾向及总结理由。
-    ```
-    {chunk_sentiments}
-    ```
-    【系统指令】：请给出一个整体的全局情感倾向（正面/负面/中性）以及总结理由。只输出全局情感倾向和理由，绝不能包含其他多余内容。
-    全局情感倾向及理由："""
-
-# 3. 全局关键词汇总提示词
-    agg_kwd = f"""任务：从以下由 ``` 包裹的多个局部关键词列表中收敛出最具语义代表性的核心术语集。
-    ```
-    {chunk_keywords}
-    ```
-   执行要求：
-执行三维筛选：①频次维度（跨片段共现优先）②分布维度（在文本不同区域均有出现）③概念层级维度（优先上位概念而非实例）
-严格去重后按语义重要性降序排列，输出恰好10个关键词
-使用中文逗号分隔，不包含序号、解释或额外标点
-直接输出关键词列表："""
-
-    # 并发执行最终的三大融合任务
-    f_sum, f_sen, f_kwd = await asyncio.gather(
-        call_ollama_chat(sys_prompt, agg_sum),
-        call_ollama_chat(sys_prompt, agg_sen),
-        call_ollama_chat(sys_prompt, agg_kwd)
+    # 并发执行三大聚合任务
+    f_sum_res, f_sen_res, f_kwd_res = await asyncio.gather(
+        aggregate_task(chunk_summaries),
+        aggregate_task(chunk_sentiments),
+        aggregate_task(chunk_keywords)
     )
 
     res = {
-        "summary": f_sum,
-        "sentiment": f_sen,
-        "keywords": f_kwd
+        "summary": f_sum_res.get("summary", ""),
+        "sentiment": f_sen_res.get("sentiment", ""),
+        "keywords": f_kwd_res.get("keywords", [])
     }
 
     print(f"[+] 文本档 {index} 分段汇总分析完成。")
@@ -294,40 +420,41 @@ async def process_single_document(text: str, index: int) -> Dict[str, str]:
 
 
 # @timetest
-async def generate_comparison(results: List[Dict[str, str]],text_name: List[int]) -> str:
-    """多文档对比分析"""
+async def generate_comparison(results: List[Dict[str, str]], text_name: List[str]) -> str:
+    """多文档对比分析：基于声明式签名 + 可选 CoT"""
     print("[*] 正在执行多文本交叉对比分析...")
-    sys_prompt = (
-    "你是一名跨文档语义合成专家，擅长从多源异构文本中识别模式、冲突与共识。"
-    "你的任务是基于提供的局部分析结果，构建一份具有洞察力的对比报告。"
-    "请遵循“证据优先、逻辑闭环”原则，避免简单的信息堆砌。"
-)
-
-    # 先拼接整理需要传入的数据
-    texts_data = ""
-    for i, r in enumerate(results):
-        texts_data += f"### 文本 {text_name[i-1]} 分析\n- **摘要**: {r['summary']}\n- **情感**: {r['sentiment']}\n- **关键词**: {r['keywords']}\n\n"
-
-    # 构造提示词
-    user_prompt = f"""以下是由 ``` 包裹的多个独立文本的分析结果集合：
-    ```
-    {texts_data}
-    ```
-    任务目标：基于上述数据，生成一份结构化对比报告。请严格执行以下三个模块的合成逻辑：
-核心差异
-聚焦维度：情感极性分歧、事实陈述矛盾、叙事视角差异。
-要求：指出具体文本编号间的冲突点，而非泛泛而谈。
-主题共性
-聚焦维度：高频实体、共享论点、一致的情感倾向。
-要求：提炼跨文本的最大公约数，说明共识的稳定性。
-综合总结
-聚焦维度：整体态势评估、潜在风险提示、信息完整性评价。
-要求：基于差异与共性的加权分析，给出高层结论。
-输出格式：标准 Markdown。
-直接开始输出报告内容：
-    """
-
-    return await call_ollama_chat(sys_prompt, user_prompt, 3, 300)
+    
+    # 构造输入
+    compare_inputs = {
+        "doc1_summary": results[0].get("summary", ""),
+        "doc2_summary": results[1].get("summary", "")
+    }
+    
+    # 调用对比签名模块
+    compare_result = await comparison_module(
+        inputs=compare_inputs,
+        cot=ENABLE_COT
+    )
+    
+    # 渲染 Markdown 报告（保持原有格式兼容）
+    md = "# ⚖️ 多资料深度对比分析\n\n"
+    
+    # 解析 differences/commonalities（支持 list 或 string 兼容）
+    def parse_list_field(val):
+        if isinstance(val, list): return val
+        if isinstance(val, str):
+            try: return json.loads(val)
+            except: return [val] if val.strip() else []
+        return []
+    
+    diffs = parse_list_field(compare_result.get("differences", []))
+    comms = parse_list_field(compare_result.get("commonalities", []))
+    
+    md += "## 🔍 共同点\n" + "\n".join(f"- {c}" for c in comms) + "\n\n"
+    md += "## ⚠️ 差异点\n" + "\n".join(f"- {d}" for d in diffs) + "\n\n"
+    md += f"## 💡 结论\n> {compare_result.get('conclusion', '')}\n"
+    
+    return md
 
 
 # ================= 输入过滤与清理 =================
